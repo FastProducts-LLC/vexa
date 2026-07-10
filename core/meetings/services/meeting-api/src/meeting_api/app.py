@@ -115,6 +115,11 @@ def create_app(
     # workload (the leave command alone is fire-and-forget — a booting bot may never receive it → orphan).
     app.include_router(build_stop_router(meeting_repo, command_publisher, runtime))
 
+    # --- acts.v1 speak/config control-plane: POST/DELETE .../speak + PUT .../config (fpn) ---
+    from .lifecycle.acts_router import build_acts_router
+
+    app.include_router(build_acts_router(meeting_repo, command_publisher))
+
     # --- collector: transcripts + meetings + ws-authorize (api.v1) ---
     if transcript_store is None:
         transcript_store = _collector_fakes().InMemoryTranscriptStore()

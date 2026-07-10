@@ -135,6 +135,7 @@ def build_invocation(
     meeting_api_callback_url: Optional[str] = None,
     internal_secret: Optional[str] = None,
     transcribe_enabled: bool = True,
+    voice_agent_enabled: bool = False,
     recording_enabled: bool = False,
     capture_modes: Optional[list[str]] = None,
     recording_upload_url: Optional[str] = None,
@@ -161,6 +162,9 @@ def build_invocation(
         "transcribeEnabled": transcribe_enabled,
         "transcriptionServiceUrl": transcription_service_url,
         "transcriptionServiceToken": transcription_service_token,
+        # invocation.v1 `voiceAgentEnabled` — gates the acts.v1 voice commands in the bot
+        # (SpeakController). Stripped when falsy (the schema field is optional; absent == off).
+        "voiceAgentEnabled": voice_agent_enabled or None,
         "recordingEnabled": recording_enabled,
         "captureModes": capture_modes,
         "recordingUploadUrl": recording_upload_url,

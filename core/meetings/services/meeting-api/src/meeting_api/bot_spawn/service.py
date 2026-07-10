@@ -130,6 +130,7 @@ async def request_bot(
     transcription_tier: str = "realtime",
     recording_enabled: bool = False,
     transcribe_enabled: bool = True,
+    voice_agent_enabled: bool = False,
     continue_meeting: bool = False,
     max_concurrent: Optional[int] = None,
     redis_url: Optional[str] = None,
@@ -200,6 +201,9 @@ async def request_bot(
             meeting_data["constructed_meeting_url"] = constructed_url
         meeting_data["transcribe_enabled"] = transcribe_enabled
         meeting_data["recording_enabled"] = recording_enabled
+        # fpn — persisted so the acts.v1 speak routes (lifecycle/acts_router) can 409 a speak
+        # against a bot that was not spawned as a voice agent (the bot would silently ignore it).
+        meeting_data["voice_agent_enabled"] = voice_agent_enabled
         # Per-user webhook config carried on the meeting (delivered by the lifecycle callback). These
         # are stripped from any outbound meeting projection (webhooks.delivery._INTERNAL_DATA_KEYS).
         if webhook_url:
@@ -268,6 +272,7 @@ async def request_bot(
         transcribe_enabled=transcribe_enabled,
         transcription_service_url=transcription_service_url,
         transcription_service_token=transcription_service_token,
+        voice_agent_enabled=voice_agent_enabled,
         recording_enabled=recording_enabled,
         capture_modes=(["audio", "video"] if recording_enabled else None),
         recording_upload_url=f"{meeting_api_url}/internal/recordings/upload",
@@ -276,11 +281,23 @@ async def request_bot(
         automatic_leave={"waitingRoomTimeout": 600000, "everyoneLeftTimeout": 900000},
     )
 
-    # 5. Spawn over runtime.v1.
+    # 5. Spawn over runtime.v1. A voice-agent bot ALSO needs the TTS backend creds — the bot's
+    #    tts-playback.ts reads TTS_SERVICE_URL / TTS_API_TOKEN from its container env (deliberately
+    #    NOT the sealed invocation.v1), so they ride the workload spec's extra_env. Only threaded
+    #    for a voice-agent spawn (no TTS token in a non-voice bot's env), only non-empty values.
+    extra_env: dict[str, str] = {}
+    if voice_agent_enabled:
+        tts_url = os.getenv("TTS_SERVICE_URL") or ""
+        tts_token = os.getenv("TTS_SERVICE_TOKEN") or ""
+        if tts_url:
+            extra_env["TTS_SERVICE_URL"] = tts_url
+        if tts_token:
+            extra_env["TTS_API_TOKEN"] = tts_token
     spec = build_workload_spec(
         workload_id=f"mtg-{meeting_id}-{connection_id[:8]}",
         invocation=invocation,
         callback_url=f"{meeting_api_url}/runtime/callback",
+        extra_env=extra_env or None,
     )
     try:
         result = await runtime.create_workload(spec)

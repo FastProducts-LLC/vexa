@@ -58,6 +58,23 @@ def _resolve_transcribe_enabled(value: Optional[object]) -> bool:
     raise HTTPException(status_code=422, detail="transcribe_enabled must be a boolean")
 
 
+def _resolve_voice_agent_enabled(value: Optional[object]) -> bool:
+    """Voice-agent gate (fpn): default OFF — a bot only consumes acts.v1 speak commands when the
+    spawn asked for it explicitly. Type-validated like ``recording_enabled`` (never a bare
+    ``bool()`` — the JSON string ``"false"`` must not silently enable the voice agent)."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("true", "1", "yes", "on"):
+            return True
+        if v in ("false", "0", "no", "off", ""):
+            return False
+    raise HTTPException(status_code=422, detail="voice_agent_enabled must be a boolean")
+
+
 def _resolve_user_id(x_user_id: Optional[str]) -> int:
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Missing user identity")
@@ -180,6 +197,9 @@ def build_router(repo: MeetingRepo, runtime: RuntimeClient) -> APIRouter:
                 transcription_tier=body.get("transcription_tier", "realtime"),
                 recording_enabled=_resolve_recording_enabled(body.get("recording_enabled")),
                 transcribe_enabled=transcribe_enabled,
+                # fpn — voice agent: gates the acts.v1 speak commands (invocation.v1
+                # `voiceAgentEnabled`); rides the OPEN api.v1 request body like continue_meeting.
+                voice_agent_enabled=_resolve_voice_agent_enabled(body.get("voice_agent_enabled")),
                 # P3c — continue_meeting is accepted off the OPEN api.v1 request body (MeetingCreate
                 # has no additionalProperties:false), so the wire is not rejected; documenting it as
                 # a public typed field needs a vN+1 (lane:contract) — see the bot_spawn README.

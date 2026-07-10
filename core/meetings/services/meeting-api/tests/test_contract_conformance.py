@@ -66,12 +66,8 @@ WAIVED: dict[tuple[str, str], str] = {
         "api.v1 declares recording delete; not implemented in the v0.12 carve (no consumer wired "
         "it — delete rides DELETE /meetings/{p}/{n}, which purges the meeting's recordings). "
         "Deferred reconcile (A2, MATURITY-FINDINGS.md).",
-    ("PUT", "/bots/{platform}/{native_meeting_id}/config"):
-        "Voice/config command to an ACTIVE bot (language/task update) — a bot-command-channel path, "
-        "not meeting-api persistence. Deferred with the voice-agent carve; the gateway forwards it.",
-    ("POST", "/bots/{platform}/{native_meeting_id}/speak"):
-        "Voice Agent TTS — a bot-command-channel path (acts.v1 PUBLISH), not meeting-api persistence. "
-        "Deferred with the voice-agent carve; the gateway forwards it.",
+    # fpn: the PUT .../config + POST .../speak waivers are CLOSED — implemented by
+    # lifecycle/acts_router (acts.v1 PUBLISH on bot_commands:meeting:{id}); the gateway forwards them.
 }
 
 

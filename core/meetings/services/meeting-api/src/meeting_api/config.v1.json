@@ -89,6 +89,21 @@
    "description": "bearer token for the STT service (must match that unit's API_TOKEN)"
   },
   {
+   "key": "TTS_SERVICE_URL",
+   "class": "defaulted",
+   "default": "(unset — no TTS env is threaded into voice-agent bot spawns; their speak acts are then no-ops at the bot)",
+   "description": "TTS base URL threaded into a voice_agent_enabled spawn's workload env as TTS_SERVICE_URL (the bot's tts-playback.ts POSTs {url}/v1/audio/speech)",
+   "targets": []
+  },
+  {
+   "key": "TTS_SERVICE_TOKEN",
+   "class": "defaulted",
+   "default": "(unset — the bot then sends no X-API-Key to the TTS service)",
+   "secret": true,
+   "description": "TTS service token threaded into a voice_agent_enabled spawn's workload env as TTS_API_TOKEN (sent by the bot as X-API-Key)",
+   "targets": []
+  },
+  {
    "key": "TRANSCRIBE_ENABLED",
    "class": "defaulted",
    "default": "true",
