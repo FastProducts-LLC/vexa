@@ -1,0 +1,172 @@
+# fpn overlay — the FastProducts deployment profile over the stock v0.12 compose file.
+#
+# Usage (from deploy/compose/):
+#   docker compose -p vexa-v012 -f docker-compose.yml -f docker-compose.fpn.yml --env-file .env up -d --wait
+#
+# What it changes:
+#   * meeting-api + gateway run the FastProducts-LLC/vexa fork images from GHCR (the fpn branch's
+#     acts.v1 speak/config control-plane patch), pinned by FPN_VEXA_SHA (default: latest).
+#   * meeting-api gets TTS_SERVICE_URL / TTS_SERVICE_TOKEN — threaded into voice-agent bot spawns
+#     (the bot's tts-playback.ts reads TTS_SERVICE_URL / TTS_API_TOKEN from its container env).
+#   * New internal-only `tts-cartesia` service: the OpenAI-compatible /v1/audio/speech shim over
+#     the Cartesia TTS API (deploy/fpn/tts-cartesia).
+#   * New internal-only `stt-hosted` service: the OpenAI-compatible /v1/audio/transcriptions shim
+#     over hosted STT providers — Deepgram (default) or Groq (deploy/fpn/stt-hosted). The overlay
+#     defaults TRANSCRIPTION_SERVICE_URL/TOKEN to it, so the separate deploy/transcription
+#     CPU/GPU unit is no longer needed; setting TRANSCRIPTION_SERVICE_URL in .env still wins.
+#   * gateway + meeting-api are ALSO attached to the external `fpn_backend` network (aliases
+#     vexa-gateway / vexa-meeting-api) so the taims stack reaches them without published ports.
+#   * terminal / mcp / agent-api are disabled (profiles: ["disabled"]) — nothing in the retained
+#     set depends on them (terminal was agent-api's only dependent).
+#   * Every retained service gets mem_limit + pids_limit and bounded json-file logging.
+#
+# Env the overlay reads (set in deploy/compose/.env):
+#   FPN_VEXA_SHA                 image tag for the three fork images (a fpn commit SHA; default latest)
+#   TTS_SERVICE_URL              meeting-api -> bot TTS endpoint (default http://tts-cartesia:8080)
+#   TTS_SERVICE_TOKEN            shared shim token (== TTS_SHIM_TOKEN; bots send it as X-API-Key)
+#   TTS_SHIM_TOKEN               the same token, as required by the shim (401 otherwise)
+#   CARTESIA_API_KEY             Cartesia API key
+#   CARTESIA_VOICE_MAP_JSON      optional JSON map: request voice name -> Cartesia voice id
+#   CARTESIA_DEFAULT_VOICE_ID    fallback Cartesia voice id
+#   TRANSCRIPTION_SERVICE_URL    meeting-api -> bot STT endpoint (default http://stt-hosted:8080;
+#                                leave unset to use the shim, or point at a self-hosted unit)
+#   TRANSCRIPTION_SERVICE_TOKEN  bearer the bots send (defaults to STT_SHIM_TOKEN)
+#   STT_SHIM_TOKEN               shared secret the stt-hosted shim requires (401 otherwise)
+#   STT_PROVIDER                 "deepgram" (default) or "groq"
+#   DEEPGRAM_API_KEY             Deepgram API key (STT_PROVIDER=deepgram)
+#   DEEPGRAM_STT_MODEL           Deepgram model (default nova-3)
+#   GROQ_API_KEY                 Groq API key (STT_PROVIDER=groq)
+#   GROQ_STT_MODEL               Groq Whisper model (default whisper-large-v3-turbo)
+#
+# The external network must exist first: docker network create fpn_backend
+
+x-fpn-logging: &fpn-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  redis:
+    mem_limit: 256m
+    pids_limit: 128
+    logging: *fpn-logging
+
+  postgres:
+    mem_limit: 1g
+    pids_limit: 256
+    logging: *fpn-logging
+
+  minio:
+    mem_limit: 512m
+    pids_limit: 128
+    logging: *fpn-logging
+
+  minio-init:
+    mem_limit: 128m
+    pids_limit: 64
+    logging: *fpn-logging
+
+  admin-api:
+    mem_limit: 256m
+    pids_limit: 128
+    logging: *fpn-logging
+
+  runtime:
+    mem_limit: 512m
+    pids_limit: 256
+    logging: *fpn-logging
+
+  meeting-api:
+    image: ghcr.io/fastproducts-llc/vexa-meeting-api:${FPN_VEXA_SHA:-latest}
+    pull_policy: missing
+    environment:
+      # Threaded by bot_spawn into voice-agent workload env as TTS_SERVICE_URL / TTS_API_TOKEN.
+      - TTS_SERVICE_URL=${TTS_SERVICE_URL:-http://tts-cartesia:8080}
+      - TTS_SERVICE_TOKEN=${TTS_SERVICE_TOKEN:-}
+      # STT the spawned bots transcribe with — defaults to the stt-hosted shim below. An explicit
+      # TRANSCRIPTION_SERVICE_URL in .env (e.g. a self-hosted deploy/transcription unit) wins.
+      - TRANSCRIPTION_SERVICE_URL=${TRANSCRIPTION_SERVICE_URL:-http://stt-hosted:8080}
+      - TRANSCRIPTION_SERVICE_TOKEN=${TRANSCRIPTION_SERVICE_TOKEN:-${STT_SHIM_TOKEN:-}}
+    mem_limit: 512m
+    pids_limit: 256
+    logging: *fpn-logging
+    networks:
+      vexa: {}
+      fpn_backend:
+        aliases: [vexa-meeting-api]
+
+  gateway:
+    image: ghcr.io/fastproducts-llc/vexa-gateway:${FPN_VEXA_SHA:-latest}
+    pull_policy: missing
+    mem_limit: 256m
+    pids_limit: 128
+    logging: *fpn-logging
+    networks:
+      vexa: {}
+      fpn_backend:
+        aliases: [vexa-gateway]
+
+  tts-cartesia:
+    image: ghcr.io/fastproducts-llc/vexa-tts-cartesia:${FPN_VEXA_SHA:-latest}
+    pull_policy: missing
+    environment:
+      - TTS_SHIM_TOKEN=${TTS_SHIM_TOKEN:-}
+      - CARTESIA_API_KEY=${CARTESIA_API_KEY:-}
+      - CARTESIA_VERSION=${CARTESIA_VERSION:-2025-04-16}
+      - CARTESIA_TTS_MODEL=${CARTESIA_TTS_MODEL:-sonic-3}
+      - CARTESIA_VOICE_MAP_JSON=${CARTESIA_VOICE_MAP_JSON:-}
+      - CARTESIA_DEFAULT_VOICE_ID=${CARTESIA_DEFAULT_VOICE_ID:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    init: true
+    mem_limit: 128m
+    pids_limit: 64
+    logging: *fpn-logging
+    # Internal only: the spawned bots reach it over the compose network (runtime attaches them to
+    # ${COMPOSE_PROJECT_NAME}_vexa via DOCKER_NETWORK). No host port, not on fpn_backend.
+    networks: [vexa]
+    restart: unless-stopped
+
+  stt-hosted:
+    image: ghcr.io/fastproducts-llc/vexa-stt-hosted:${FPN_VEXA_SHA:-latest}
+    pull_policy: missing
+    environment:
+      - STT_SHIM_TOKEN=${STT_SHIM_TOKEN:-}
+      - STT_PROVIDER=${STT_PROVIDER:-deepgram}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:-}
+      - DEEPGRAM_STT_MODEL=${DEEPGRAM_STT_MODEL:-nova-3}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_STT_MODEL=${GROQ_STT_MODEL:-whisper-large-v3-turbo}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    init: true
+    mem_limit: 128m
+    pids_limit: 64
+    logging: *fpn-logging
+    # Internal only, same posture as tts-cartesia: bots reach it over the compose network.
+    networks: [vexa]
+    restart: unless-stopped
+
+  # ── disabled in the fpn deployment (profiles keep them out of `up`) ─────────────────────────────
+  # terminal was the ONLY dependent of agent-api, so agent-api can be disabled with it.
+  terminal:
+    profiles: ["disabled"]
+
+  mcp:
+    profiles: ["disabled"]
+
+  agent-api:
+    profiles: ["disabled"]
+
+networks:
+  fpn_backend:
+    external: true
