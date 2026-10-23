@@ -312,6 +312,9 @@ services:
       - MINIO_BUCKET=${MINIO_BUCKET:-vexa}
       - MINIO_SECURE=${MINIO_SECURE:-false}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      # Local-dev stack: tolerate the placeholder secrets above. A real deploy sets DEV_MODE=false (the
+      # fpn overlay pins it), and the boot preflight then refuses any stock placeholder value.
+      - DEV_MODE=${DEV_MODE:-true}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health').status==200 else 1)"]
       interval: 10s
