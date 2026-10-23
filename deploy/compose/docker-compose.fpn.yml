@@ -124,6 +124,16 @@ services:
       retries: 5
       start_period: 10s
     init: true
+    # Non-root posture (the image's own USER is 10001:10001; `user:` pins it even if the image
+    # tag ever regresses). No disk state: root fs read-only, tmpfs for Python's tempdir, all
+    # capabilities dropped (port 8080 needs none), no setuid escalation.
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     mem_limit: 128m
     pids_limit: 64
     logging: *fpn-logging
@@ -149,6 +159,16 @@ services:
       retries: 5
       start_period: 10s
     init: true
+    # Same non-root posture as tts-cartesia. The tmpfs on /tmp matters here: Starlette spools
+    # multipart uploads larger than 1 MiB to the tempdir, and the bot's WAV windows sit right
+    # around that size — with read_only and no tmpfs those requests would fail.
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     mem_limit: 128m
     pids_limit: 64
     logging: *fpn-logging
