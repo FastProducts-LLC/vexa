@@ -184,9 +184,17 @@ async def finalize_master(
     return await repo.mutate_recordings(meeting_id, _stamp)
 
 
+# The claims ``bot_spawn.invocation.mint_meeting_token`` stamps — the verifier pins every one, so a
+# token minted for another purpose/audience under the same secret is not accepted here.
+MEETING_TOKEN_ISSUER = "meeting-api"
+MEETING_TOKEN_AUDIENCE = "transcription-collector"
+MEETING_TOKEN_SCOPE = "transcribe:write"
+
+
 def _verify_meeting_token(token: str, *, secret: Optional[str] = None) -> dict[str, Any]:
     """Verify a MeetingToken (HS256, ``ADMIN_TOKEN``-signed) and return its claims. Raises
-    ``ValueError`` on a bad signature / expiry (the parent ``verify_meeting_token``)."""
+    ``ValueError`` on a bad signature, a non-HS256 header, a missing/past ``exp``, or an
+    ``iss``/``aud``/``scope`` that is not what the minter sets (or a missing ``meeting_id``)."""
     import base64
     import hmac
     import json
@@ -199,13 +207,44 @@ def _verify_meeting_token(token: str, *, secret: Optional[str] = None) -> dict[s
         header_b64, payload_b64, sig_b64 = token.split(".")
     except ValueError:
         raise ValueError("malformed MeetingToken")
+
+    def _b64json(part: str) -> Any:
+        try:
+            return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+        except Exception:
+            raise ValueError("malformed MeetingToken")
+
     signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
     expected = hmac.new(secret.encode(), signing_input, digestmod="sha256").digest()
-    got = base64.urlsafe_b64decode(sig_b64 + "=" * (-len(sig_b64) % 4))
+    try:
+        got = base64.urlsafe_b64decode(sig_b64 + "=" * (-len(sig_b64) % 4))
+    except Exception:
+        raise ValueError("malformed MeetingToken")
     if not hmac.compare_digest(expected, got):
         raise ValueError("MeetingToken signature mismatch")
-    claims = json.loads(base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4)))
+    header = _b64json(header_b64)
+    if not isinstance(header, dict) or header.get("alg") != "HS256":
+        raise ValueError("MeetingToken alg must be HS256")
+    claims = _b64json(payload_b64)
+    if not isinstance(claims, dict):
+        raise ValueError("malformed MeetingToken")
     exp = claims.get("exp")
-    if exp is not None and int(datetime.now(timezone.utc).timestamp()) > int(exp):
+    if exp is None:
+        raise ValueError("MeetingToken missing exp")
+    try:
+        exp_i = int(exp)
+    except (TypeError, ValueError):
+        raise ValueError("MeetingToken exp invalid")
+    if int(datetime.now(timezone.utc).timestamp()) > exp_i:
         raise ValueError("MeetingToken expired")
+    if claims.get("iss") != MEETING_TOKEN_ISSUER:
+        raise ValueError("MeetingToken issuer mismatch")
+    aud = claims.get("aud")
+    if not (aud == MEETING_TOKEN_AUDIENCE or (isinstance(aud, list) and MEETING_TOKEN_AUDIENCE in aud)):
+        raise ValueError("MeetingToken audience mismatch")
+    scope = claims.get("scope")
+    if not isinstance(scope, str) or MEETING_TOKEN_SCOPE not in scope.split():
+        raise ValueError("MeetingToken scope mismatch")
+    if claims.get("meeting_id") is None:
+        raise ValueError("MeetingToken missing meeting_id")
     return claims

@@ -126,6 +126,120 @@ def test_upload_route_accepts_valid_token():
     assert r.json()["status"] == "completed"
 
 
+# ── MeetingToken verifier: exp REQUIRED, iss/aud/scope/alg pinned to what the minter stamps ──────
+
+
+def _forge(claims: dict, *, secret: str = SECRET, header: dict | None = None) -> str:
+    """Sign arbitrary claims with the REAL secret — the verifier must still reject anything the
+    minter would not have produced (no exp, foreign iss/aud/scope, non-HS256 header)."""
+    import base64
+    import hmac
+    import json
+
+    def b64(d):
+        return base64.urlsafe_b64encode(json.dumps(d, separators=(",", ":")).encode()).rstrip(b"=").decode()
+
+    h = b64(header or {"alg": "HS256", "typ": "JWT"})
+    p = b64(claims)
+    sig = hmac.new(secret.encode(), f"{h}.{p}".encode(), digestmod="sha256").digest()
+    return f"{h}.{p}.{base64.urlsafe_b64encode(sig).rstrip(b'=').decode()}"
+
+
+def _good_claims(**over):
+    import time
+
+    c = {"meeting_id": MEETING_ID, "user_id": USER, "platform": "google_meet", "native_meeting_id": "abc",
+         "scope": "transcribe:write", "iss": "meeting-api", "aud": "transcription-collector",
+         "iat": int(time.time()), "exp": int(time.time()) + 600, "jti": "j"}
+    c.update(over)
+    return c
+
+
+def test_verifier_accepts_minted_token():
+    from meeting_api.recordings.service import _verify_meeting_token
+
+    tok = mint_meeting_token(MEETING_ID, USER, "google_meet", "abc", secret=SECRET)
+    claims = _verify_meeting_token(tok, secret=SECRET)
+    assert claims["meeting_id"] == MEETING_ID
+    # a hand-built token with exactly the minter's claims verifies too (the forge helper is honest)
+    assert _verify_meeting_token(_forge(_good_claims()), secret=SECRET)["iss"] == "meeting-api"
+
+
+@pytest.mark.parametrize(
+    "claims, why",
+    [
+        ({k: v for k, v in _good_claims().items() if k != "exp"}, "missing exp"),
+        (_good_claims(exp=1), "expired"),
+        (_good_claims(exp="soon"), "exp invalid"),
+        (_good_claims(iss="someone-else"), "issuer"),
+        ({k: v for k, v in _good_claims().items() if k != "iss"}, "issuer"),
+        (_good_claims(aud="admin-api"), "audience"),
+        ({k: v for k, v in _good_claims().items() if k != "aud"}, "audience"),
+        (_good_claims(scope="admin"), "scope"),
+        ({k: v for k, v in _good_claims().items() if k != "scope"}, "scope"),
+        ({k: v for k, v in _good_claims().items() if k != "meeting_id"}, "meeting_id"),
+    ],
+)
+def test_verifier_rejects_off_contract_claims(claims, why):
+    from meeting_api.recordings.service import _verify_meeting_token
+
+    with pytest.raises(ValueError) as ei:
+        _verify_meeting_token(_forge(claims), secret=SECRET)
+    assert why in str(ei.value)
+
+
+def test_verifier_accepts_aud_list_containing_audience():
+    from meeting_api.recordings.service import _verify_meeting_token
+
+    tok = _forge(_good_claims(aud=["other", "transcription-collector"]))
+    assert _verify_meeting_token(tok, secret=SECRET)["meeting_id"] == MEETING_ID
+
+
+def test_verifier_rejects_non_hs256_header_and_wrong_secret():
+    from meeting_api.recordings.service import _verify_meeting_token
+
+    with pytest.raises(ValueError, match="HS256"):
+        _verify_meeting_token(_forge(_good_claims(), header={"alg": "none"}), secret=SECRET)
+    with pytest.raises(ValueError, match="signature"):
+        _verify_meeting_token(_forge(_good_claims(), secret="other-secret"), secret=SECRET)
+    with pytest.raises(ValueError, match="malformed"):
+        _verify_meeting_token("a.b", secret=SECRET)
+    with pytest.raises(ValueError):
+        _verify_meeting_token("!!!.@@@.###", secret=SECRET)
+
+
+def test_upload_route_rejects_token_without_exp():
+    client = _client()
+    tok = _forge({k: v for k, v in _good_claims().items() if k != "exp"})
+    r = client.post(
+        "/internal/recordings/upload",
+        headers={"Authorization": f"Bearer {tok}"},
+        data={"session_uid": SESSION_UID, "media_format": "wav", "chunk_seq": 0, "is_final": "true"},
+        files={"file": ("c.wav", _wav(), "audio/wav")},
+    )
+    assert r.status_code == 401
+    assert "exp" in r.json()["detail"]
+
+
+def test_upload_route_internal_secret_bearer_still_accepted(monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_SECRET", "isec-123")
+    client = _client()
+    ok = client.post(
+        "/internal/recordings/upload",
+        headers={"Authorization": "Bearer isec-123"},
+        data={"session_uid": SESSION_UID, "media_format": "wav", "chunk_seq": 0, "is_final": "true"},
+        files={"file": ("c.wav", _wav(), "audio/wav")},
+    )
+    assert ok.status_code == 200, ok.text
+    bad = client.post(
+        "/internal/recordings/upload",
+        headers={"Authorization": "Bearer isec-12"},
+        data={"session_uid": SESSION_UID, "media_format": "wav", "chunk_seq": 1, "is_final": "true"},
+        files={"file": ("c.wav", _wav(), "audio/wav")},
+    )
+    assert bad.status_code == 401
+
+
 # ── G4: object-storage I/O must not block the event loop ─────────────────────────────────────────
 
 
