@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from gateway import create_app
-from conftest import VALID_KEY, FakeAuthorizer, FakeDownstream, FakeRedis
+from conftest import VALID_KEY, VALID_USER, FakeAuthorizer, FakeDownstream, FakeRedis
 
 AUTH = {"x-api-key": VALID_KEY}
 
@@ -111,6 +111,27 @@ def test_identity_headers_injected_and_spoof_stripped():
     assert fwd["x-user-id"] == "7", "must reflect the resolved user, not the spoofed header"
     assert fwd["x-user-scopes"] == "bot,tx,browser"
     assert fwd["x-api-key"] == VALID_KEY
+
+
+def test_grant_headers_cannot_be_spoofed_by_the_client():
+    """meeting-api authorizes shared reads AND workspace binds off x-user-workspaces, and agent-api's
+    restricted invites off x-user-email — so a client-declared value must never reach downstream: the
+    gateway forwards ONLY what /internal/validate resolved (here: no memberships → header absent)."""
+    client, downstream = _client()
+    r = client.post("/meetings/google_meet/abc-defg-hij/workspace",
+                    json={"workspace_id": "victim-ws"},
+                    headers={**AUTH, "x-user-workspaces": "victim-ws", "x-user-email": "ceo@victim.io",
+                             "x-user-webhook-secret": "forged"})
+    assert r.status_code == 200
+    fwd = downstream.last["headers"]
+    assert "x-user-workspaces" not in fwd
+    assert fwd["x-user-email"] == "u@example.com"
+    assert "x-user-webhook-secret" not in fwd
+
+    member = {**VALID_USER, "workspaces": ["team-ws"]}
+    client, downstream = _client(authorizer=FakeAuthorizer(user=member))
+    client.get("/meetings", headers={**AUTH, "x-user-workspaces": "victim-ws"})
+    assert downstream.last["headers"]["x-user-workspaces"] == "team-ws"
 
 
 def test_meeting_intent_put_forwards_to_meeting_api():

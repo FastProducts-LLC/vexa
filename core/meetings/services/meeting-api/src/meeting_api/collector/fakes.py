@@ -170,7 +170,14 @@ class InMemoryTranscriptStore:
             or user_id in (data.get("transcript_viewers") or [])
             or (bool(member_workspaces) and data.get("workspace_id") in member_workspaces)
         )
-        return await self._transcript_doc(mid) if authorized else None
+        if not authorized:
+            return None
+        doc = await self._transcript_doc(mid)
+        if m.get("user_id") != user_id:  # shared read → owner-private data stripped (mirrors the real store)
+            from .adapters import viewer_safe_data
+
+            doc["data"] = viewer_safe_data(doc.get("data"))
+        return doc
 
     async def list_meetings(self, user_id, *, status=None, platform=None, limit=None, offset=None, member_workspaces=None):
         mws = member_workspaces or set()
@@ -192,6 +199,8 @@ class InMemoryTranscriptStore:
             rows = rows[offset:]
         if limit:
             rows = rows[:limit]
+        from .adapters import viewer_safe_data
+
         return [
             {
                 "id": mid,
@@ -203,7 +212,7 @@ class InMemoryTranscriptStore:
                 "bot_container_id": m.get("bot_container_id"),
                 "start_time": m["start_time"],
                 "end_time": m["end_time"],
-                "data": m["data"],
+                "data": m["data"] if m["user_id"] == user_id else viewer_safe_data(m["data"]),
                 "shared": m["user_id"] != user_id,
                 "created_at": m["created_at"],
                 "updated_at": m["updated_at"],

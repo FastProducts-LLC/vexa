@@ -38,7 +38,8 @@ never merge, never accumulate history. Update the pin recorded here and in the c
    - `deploy/compose/docker-compose.fpn.yml` — overlay over the stock compose file: fork images
      for meeting-api/gateway, the `tts-cartesia` + `stt-hosted` services (meeting-api's
      `TRANSCRIPTION_SERVICE_URL` defaults to the shim), the external `fpn_backend` network
-     (aliases `vexa-gateway` / `vexa-meeting-api`), resource limits + bounded logging everywhere,
+     (gateway only, alias `vexa-gateway` — meeting-api trusts gateway-injected identity headers, so
+     it stays on the internal `vexa` network), resource limits + bounded logging everywhere,
      terminal/mcp/agent-api disabled.
    - `.github/workflows/fpn-images.yml` — this file (see below).
    - this `FORK.md`.

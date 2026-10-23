@@ -176,12 +176,30 @@ class WorkspaceReader:
                 break
         if not sid:
             # LAST RESORT — threads recorded BEFORE continuity anchoring sit under whatever workspace
-            # was the turn's cwd at the time, which may no longer be mounted (deactivated / membership
-            # gone). Two fixed-depth globs over the store root find the pointer; read-only + bounded.
-            for pat in (f"*/.claude/sessions/{session}.session",
-                        f".attached/*/*/.claude/sessions/{session}.session"):
+            # was the turn's cwd at the time, which may no longer be mounted (deactivated). Two
+            # fixed-depth globs over the store root find the pointer; read-only + bounded.
+            # SUBJECT-SCOPED (cross-tenant fix): the globs used to span EVERY user's workspaces
+            # (``*/`` and ``.attached/*/*/``), so a common session name ("default") resolved to ANOTHER
+            # user's chat transcript whenever the caller had none of their own. Only the caller's own
+            # parked slots and the shared workspaces they are STILL a member of qualify now.
+            import glob as _glob
+
+            from control_plane import workspace_membership as _membership
+
+            def _mine(ws: Path) -> bool:
+                if ws.parent.name == subject and ws.parent.parent.name == ".attached":
+                    return True  # <root>/.attached/<subject>/<slug> — the caller's own parked slot
+                if ws.parent == self._root:
+                    return ws.name == subject or _membership.is_member(self._root, ws.name, subject) is not None
+                return False
+
+            esc_session, esc_subject = _glob.escape(session), _glob.escape(subject)
+            for pat in (f"*/.claude/sessions/{esc_session}.session",
+                        f".attached/{esc_subject}/*/.claude/sessions/{esc_session}.session"):
                 for f in self._root.glob(pat):
                     ws = f.parents[2]
+                    if not _mine(ws):
+                        continue
                     sid = self._session_id(ws, session)
                     if sid:
                         roots.append(ws)

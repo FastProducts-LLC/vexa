@@ -720,14 +720,23 @@ def test_session_history_sweeps_unmounted_strands(tmp_path):
     still load: the reader's last-resort sweep finds the pointer without any extra_roots."""
     from control_plane.workspace_reader import WorkspaceReader
 
+    import json as _json
+
+    from control_plane.workspace_membership import MEMBERS_FILE
+
     gone = tmp_path / "some-shared-ws"          # not passed as an extra root — unmounted
     (gone / ".claude" / "sessions").mkdir(parents=True)
     (gone / ".claude" / "sessions" / "chat-z.session").write_text("sid-7\n")
     _write_transcript(gone, "sid-7", [
         {"type": "user", "message": {"role": "user", "content": "stranded"}},
     ])
+    # Deactivated (switched off) — but subject 28 is STILL a member, so the strand is theirs to load.
+    (gone / MEMBERS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    (gone / MEMBERS_FILE).write_text(_json.dumps([{"subject": "28", "role": "contributor"}]))
     reader = WorkspaceReader(str(tmp_path))
     assert reader.history("28", "chat-z") == [{"role": "user", "text": "stranded"}]
+    # Cross-tenant guard: a NON-member (subject 99) must never sweep another workspace's chat.
+    assert reader.history("99", "chat-z") == []
 
 
 def test_session_history_prefers_the_system_anchor(tmp_path):

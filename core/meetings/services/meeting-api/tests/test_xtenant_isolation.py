@@ -178,3 +178,224 @@ async def test_two_tenants_same_meeting_keep_separate_correct_transcripts(bus):
     b = client.get("/transcripts/by-id/20", headers={"x-user-id": "200"}).json()
     assert [s["text"] for s in a["segments"]] == ["hello from A"]
     assert [s["text"] for s in b["segments"]] == ["hello from B"]
+
+
+# ── OBJECT-LEVEL AUTHZ (BOLA/IDOR) — cross-tenant + cross-role across the meeting-api surface ─────────
+#
+# Every route below is addressed by a caller-supplied id (row id, (platform, native), recording id,
+# workspace id, share token). The rule: someone else's object → 404 (no existence oracle); a SHARED read
+# (transcript-share viewer / bound-workspace member) never receives the owner's private meeting.data.
+
+from meeting_api import create_app as create_meeting_api  # noqa: E402 — the unified monolith app
+from meeting_api.bot_spawn.fakes import InMemoryMeetingRepo  # noqa: E402
+from meeting_api.lifecycle.stop_router import InMemoryCommandPublisher  # noqa: E402
+from meeting_api.recordings.fakes import InMemoryRecordingRepo, InMemoryStorage  # noqa: E402
+
+OWNER, VIEWER, MEMBER, STRANGER = 100, 200, 300, 400
+_PRIVATE = {
+    "webhook_url": "https://owner.example/hook",
+    "webhook_secret": "whsec_owner_private_secret",
+    "webhook_events": {"meeting.completed": True},
+}
+
+
+def _h(uid, workspaces=None):
+    h = {"x-user-id": str(uid)}
+    if workspaces is not None:
+        h["x-user-workspaces"] = ",".join(workspaces)
+    return h
+
+
+def _shared_store():
+    """OWNER's meeting carrying a webhook secret, shared to VIEWER (redeemed transcript-share link) and
+    bound to workspace `team-ws` (MEMBER belongs to it)."""
+    store = InMemoryTranscriptStore()
+    store.seed_meeting(
+        user_id=OWNER, platform="google_meet", native_meeting_id=NATIVE, meeting_id=10,
+        segments=[dict(_seg("o1", "owner line"))],
+        data={**_PRIVATE, "title": "Board sync", "workspace_id": "team-ws",
+              "transcript_viewers": [VIEWER],
+              "share_grants": [{"id": "g1", "secret_hash": "deadbeef", "mode": "open"}]},
+    )
+    return store, TestClient(create_app(store, redis=None))
+
+
+def _assert_viewer_safe(data):
+    for k in ("webhook_url", "webhook_secret", "webhook_events", "share_grants", "transcript_viewers"):
+        assert k not in data, f"owner-private key {k!r} leaked to a non-owner"
+
+
+def test_shared_reads_never_leak_owner_private_meeting_data():
+    """A share viewer / workspace member may READ the transcript, but the owner's webhook secret (which
+    bot_spawn persists on meeting.data), the share-grant ledger and the viewer roster are stripped on
+    EVERY shared read path: GET /meetings, GET /meetings/{id}, GET /transcripts/by-id/{id}."""
+    _store, client = _shared_store()
+
+    for headers in (_h(VIEWER), _h(MEMBER, ["team-ws"])):
+        rows = client.get("/meetings", headers=headers).json()["meetings"]
+        assert [r["id"] for r in rows] == [10] and rows[0]["shared"] is True
+        _assert_viewer_safe(rows[0]["data"])
+        assert rows[0]["data"]["title"] == "Board sync"  # non-private data still flows
+
+        doc = client.get("/transcripts/by-id/10", headers=headers)
+        assert doc.status_code == 200
+        _assert_viewer_safe(doc.json()["data"])
+        assert [s["text"] for s in doc.json()["segments"]] == ["owner line"]
+
+    one = client.get("/meetings/10", headers=_h(VIEWER))
+    assert one.status_code == 200
+    _assert_viewer_safe(one.json()["data"])
+
+    # The OWNER still sees their own full row (legit flow not over-filtered).
+    own = client.get("/meetings/10", headers=_h(OWNER)).json()
+    assert own["data"]["webhook_secret"] == _PRIVATE["webhook_secret"]
+
+
+def test_stranger_gets_404_on_every_id_addressed_read():
+    """No grant at all → 404 on the by-id transcript + single-meeting reads, absent from the list."""
+    _store, client = _shared_store()
+    assert client.get("/transcripts/by-id/10", headers=_h(STRANGER)).status_code == 404
+    assert client.get("/meetings/10", headers=_h(STRANGER)).status_code == 404
+    assert client.get("/meetings", headers=_h(STRANGER, ["other-ws"])).json()["meetings"] == []
+    assert client.get(f"/transcripts/google_meet/{NATIVE}", headers=_h(STRANGER)).status_code == 404
+
+
+def test_shared_reader_cannot_write_the_owners_meeting():
+    """A share/membership grant is READ-only: every owner-scoped write resolves the caller's OWN row, so
+    a viewer/member gets 404 (they own no such row) — mint share, bind workspace, docs, intent, PATCH,
+    DELETE."""
+    _store, client = _shared_store()
+    for headers in (_h(VIEWER), _h(MEMBER, ["team-ws"])):
+        base = f"/meetings/google_meet/{NATIVE}"
+        assert client.post(f"{base}/share", json={}, headers=headers).status_code == 404
+        assert client.post(f"{base}/workspace", json={"workspace_id": "team-ws"},
+                           headers={**headers, "x-user-workspaces": "team-ws"}).status_code == 404
+        assert client.post(f"{base}/docs", json={"path": "a.md", "workspace": "w"},
+                           headers=headers).status_code == 404
+        assert client.request("DELETE", f"{base}/docs", params={"path": "a.md"},
+                              headers=headers).status_code == 404
+        assert client.put(f"{base}/intent", json={"intent": "idle"}, headers=headers).status_code == 404
+        assert client.patch("/meetings/10", json={"title": "pwned"}, headers=headers).status_code == 404
+        assert client.delete("/meetings/10", headers=headers).status_code == 404
+
+
+def test_cannot_bind_a_meeting_into_a_workspace_you_are_not_a_member_of():
+    """The workspace bind IS the read grant for that workspace's members, so binding into a FOREIGN
+    workspace (pushing your meeting into another tenant's shared list) → 404, on all three write paths
+    (POST .../workspace, POST /meetings, PATCH /meetings/{id}). Member binds + unbinds keep working."""
+    store = InMemoryTranscriptStore()
+    store.seed_meeting(user_id=STRANGER, platform="google_meet", native_meeting_id=NATIVE, meeting_id=40)
+    client = TestClient(create_app(store, redis=None))
+
+    r = client.post(f"/meetings/google_meet/{NATIVE}/workspace", json={"workspace_id": "victim-ws"},
+                    headers=_h(STRANGER, ["my-ws"]))
+    assert r.status_code == 404
+    r = client.post("/meetings", json={"title": "spam", "workspace_id": "victim-ws"},
+                    headers=_h(STRANGER))
+    assert r.status_code == 404
+    planned = client.post("/meetings", json={"title": "mine"}, headers=_h(STRANGER)).json()["id"]
+    r = client.patch(f"/meetings/{planned}", json={"workspace_id": "victim-ws"},
+                     headers=_h(STRANGER, ["my-ws"]))
+    assert r.status_code == 404
+    # Nothing landed in the victim workspace's member listing.
+    assert client.get("/meetings", headers=_h(MEMBER, ["victim-ws"])).json()["meetings"] == []
+
+    # Legit: a member binds into THEIR workspace, and unbinding (null) needs no membership.
+    ok = client.post(f"/meetings/google_meet/{NATIVE}/workspace", json={"workspace_id": "my-ws"},
+                     headers=_h(STRANGER, ["my-ws"]))
+    assert ok.status_code == 200
+    assert client.patch(f"/meetings/{planned}", json={"workspace_id": "my-ws"},
+                        headers=_h(STRANGER, ["my-ws"])).status_code == 200
+    unbound = client.patch(f"/meetings/{planned}", json={"workspace_id": None}, headers=_h(STRANGER))
+    assert unbound.status_code == 200 and "workspace_id" not in unbound.json()["data"]
+
+
+def test_share_mint_rejects_unknown_mode():
+    """An unknown share mode used to fall through the grant validator as an OPEN link → now 422."""
+    store = InMemoryTranscriptStore()
+    store.seed_meeting(user_id=OWNER, platform="google_meet", native_meeting_id=NATIVE, meeting_id=10)
+    client = TestClient(create_app(store, redis=None))
+    r = client.post(f"/meetings/google_meet/{NATIVE}/share", json={"mode": "restrcited"}, headers=_h(OWNER))
+    assert r.status_code == 422
+    assert client.post(f"/meetings/google_meet/{NATIVE}/share", json={"mode": "restricted",
+                       "allowed_emails": ["a@x.io"]}, headers=_h(OWNER)).status_code == 200
+
+
+def test_ws_subscribe_is_scoped_to_grants():
+    """/ws/authorize-subscribe: owner, viewer and bound-workspace member are authorized for the SAME row;
+    a stranger (or a member of an unrelated workspace) gets nothing."""
+    _store, client = _shared_store()
+    body = {"meetings": [{"platform": "google_meet", "native_meeting_id": NATIVE}]}
+
+    def ids(headers):
+        return [a["meeting_id"] for a in client.post("/ws/authorize-subscribe", json=body,
+                                                     headers=headers).json()["authorized"]]
+
+    assert ids(_h(OWNER)) == ["10"]
+    assert ids(_h(VIEWER)) == ["10"]
+    assert ids(_h(MEMBER, ["team-ws"])) == ["10"]
+    assert ids(_h(STRANGER)) == []
+    assert ids(_h(STRANGER, ["other-ws"])) == []
+
+
+def _bot_stack():
+    repo, pub = InMemoryMeetingRepo(), InMemoryCommandPublisher()
+    import asyncio
+
+    m = asyncio.run(repo.create_meeting(user_id=OWNER, platform="google_meet", native_meeting_id="v1",
+                                        data={"voice_agent_enabled": True}))
+    asyncio.run(repo.create_session(meeting_id=m["id"], session_uid="sess-v1"))
+    return repo, pub, TestClient(create_meeting_api(meeting_repo=repo, command_publisher=pub))
+
+
+def test_bot_control_routes_are_owner_scoped():
+    """stop / speak / speak_stop / config on ANOTHER tenant's live bot → 404 and NOTHING is published on
+    its command channel; the owner's own calls still go through."""
+    _repo, pub, client = _bot_stack()
+    for method, path, body in (
+        ("DELETE", "/bots/google_meet/v1", None),
+        ("POST", "/bots/google_meet/v1/speak", {"text": "hijack"}),
+        ("DELETE", "/bots/google_meet/v1/speak", None),
+        ("PUT", "/bots/google_meet/v1/config", {"language": "fr"}),
+    ):
+        r = client.request(method, path, json=body, headers=_h(STRANGER))
+        assert r.status_code == 404, (method, path, r.status_code)
+    assert pub.published == []
+    assert client.post("/bots/google_meet/v1/speak", json={"text": "hi"}, headers=_h(OWNER)).status_code == 202
+    assert len(pub.published) == 1
+
+
+def test_recording_downloads_are_owner_scoped():
+    """GET /recordings/{id}, /master and /media/{mf}/raw for ANOTHER tenant's recording id → 404 (no
+    bytes); the list never includes it. A transcript-share viewer gets no recording access either."""
+    import asyncio
+
+    repo, storage = InMemoryRecordingRepo(), InMemoryStorage()
+    repo.seed(meeting_id=10, user_id=OWNER, session_uid="s-10")
+    asyncio.run(storage.upload("rec/10/master.wav", b"RIFFsecret-audio", content_type="audio/wav"))
+    asyncio.run(repo.put_recordings(10, [{
+        "id": 555, "session_uid": "s-10", "status": "completed",
+        "media_files": [{"id": 9, "type": "audio", "format": "wav", "is_final": True,
+                         "storage_path": "rec/10/master.wav"}],
+    }]))
+    client = TestClient(create_meeting_api(recording_repo=repo, storage=storage))
+
+    for uid in (STRANGER, VIEWER):
+        assert client.get("/recordings", headers=_h(uid)).json()["recordings"] == []
+        for path in ("/recordings/555", "/recordings/555/master?type=audio",
+                     "/recordings/555/media/9/raw?type=audio"):
+            r = client.get(path, headers=_h(uid))
+            assert r.status_code == 404, (uid, path, r.status_code)
+            assert b"secret-audio" not in r.content
+
+    raw = client.get("/recordings/555/media/9/raw?type=audio", headers=_h(OWNER))
+    assert raw.status_code == 200 and raw.content == b"RIFFsecret-audio"
+
+
+def test_identity_header_is_mandatory():
+    """No gateway-injected identity → 401 on the id-addressed routes (fail closed, never 'user 0')."""
+    client = TestClient(create_meeting_api())  # the unified app: collector + recordings + bots mounted
+    for path in ("/transcripts/by-id/10", "/meetings/10", "/meetings", "/recordings", "/recordings/1",
+                 "/bots", "/bots/status"):
+        assert client.get(path).status_code == 401, path
+    assert client.delete("/bots/google_meet/v1").status_code == 401

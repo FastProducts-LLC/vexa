@@ -62,6 +62,21 @@ def validate_transcript_grant(grant: dict, user_email: Optional[str]) -> Optiona
     return None
 
 
+# OWNER-PRIVATE meeting.data keys a NON-owner (transcript-share viewer / bound-workspace member) must never
+# receive: the owner's webhook config (bot_spawn persists webhook_url + webhook_secret on the row — leaking the
+# secret lets the reader forge signed webhooks to the owner's endpoint), the share-grant ledger and the viewer
+# roster (other recipients' user ids). Reuses the webhook payload strip-list so the two projections agree.
+_OWNER_PRIVATE_DATA_KEYS = frozenset({"share_grants", "transcript_viewers"})
+
+
+def viewer_safe_data(data: Optional[dict]) -> dict:
+    """``meeting.data`` as a NON-owner may see it — owner-private keys stripped (shared fake + real store)."""
+    from ..webhooks.delivery import clean_meeting_data
+
+    return {k: v for k, v in clean_meeting_data(data if isinstance(data, dict) else {}).items()
+            if k not in _OWNER_PRIVATE_DATA_KEYS}
+
+
 def _doc_ref(doc: dict) -> dict:
     """Normalize a connect-doc body to a stored ``data.docs[]`` ref: ``workspace`` + ``path`` are
     required; ``title`` / ``kind`` ride along when present. Doc bodies live in the agent workspace —
@@ -326,7 +341,10 @@ class SqlAlchemyTranscriptStore:
             )
             if not authorized:
                 return None
-            return await self._transcript_doc(db, meeting)
+            doc = await self._transcript_doc(db, meeting)
+            if meeting.user_id != user_id:  # shared read → strip owner-private data (webhook secret, grants)
+                doc["data"] = viewer_safe_data(doc.get("data"))
+            return doc
 
     async def list_meetings(self, user_id, *, status=None, platform=None, limit=None, offset=None, member_workspaces=None):
         from sqlalchemy import cast, func, or_, select
@@ -366,7 +384,9 @@ class SqlAlchemyTranscriptStore:
                     "bot_container_id": m.bot_container_id,
                     "start_time": m.start_time.isoformat() if m.start_time else None,
                     "end_time": m.end_time.isoformat() if m.end_time else None,
-                    "data": m.data if isinstance(m.data, dict) else {},
+                    # A shared row ships only the viewer-safe projection (never the owner's webhook secret).
+                    "data": (m.data if isinstance(m.data, dict) else {}) if m.user_id == user_id
+                    else viewer_safe_data(m.data),
                     "shared": m.user_id != user_id,   # surfaced via a share/membership, not owned by the caller
                     "created_at": m.created_at.isoformat() if m.created_at else None,
                     "updated_at": m.updated_at.isoformat() if m.updated_at else None,
