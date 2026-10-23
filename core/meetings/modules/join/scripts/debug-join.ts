@@ -90,7 +90,7 @@ if (!isMeetUrl && !isTeamsUrl && !isZoomUrl) {
   const view = await startDebugView();
   console.log("\n────────────────────────────────────────────");
   console.log(" DEBUG VIEW");
-  if (view.novncUrl) console.log("  human (pixels):  " + view.novncUrl);
+  if (view.novncUrl) console.log("  human (pixels):  " + view.novncUrl + (view.vncPassword ? "  (VNC password: " + view.vncPassword + ")" : ""));
   else               console.log("  human (pixels):  headed window on this desktop");
   console.log("  agent (control): playwright connectOverCDP(\"" + view.cdpUrl + "\")");
   console.log("────────────────────────────────────────────\n");

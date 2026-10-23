@@ -985,28 +985,50 @@ def create_app(
     # TOPOLOGY BOUNDARY (Lane M vector 3): agent-api trusts X-User-Id / X-User-Email as ground truth.
     # That trust is only SOUND when the gateway is the SOLE ingress — the gateway strips any client-sent
     # x-user-id/x-user-email and re-injects the values it resolved from the verified api-key. In the
-    # current dev/direct topology the terminal and host-local clients reach agent-api WITHOUT the gateway
-    # hop (compose loopback + VEXA_AGENT_DEFAULT_SUBJECT fallback), so those headers are spoofable and
-    # restricted-mode invites MUST NOT be relied on as a security boundary here. A hardened deploy sets
-    # VEXA_REQUIRE_GATEWAY_IDENTITY=1: agent-api then rejects any request lacking the gateway's signed
-    # identity marker (X-Gateway-Verified), so identity headers are only honored when the gateway put
-    # them there. OFF by default so the dev/direct topology keeps working. Full fix = route the terminal
-    # through the gateway (Stage 4) and make the gateway the only thing that can reach agent-api.
-    _require_gateway_identity = os.environ.get("VEXA_REQUIRE_GATEWAY_IDENTITY", "").strip().lower() in ("1", "true", "yes")
+    # agent-api is reachable by every container on the compose network (and lite published it on the
+    # host), so a plain X-User-Id header is spoofable by anything that can open a socket to it. Identity
+    # headers are therefore honored ONLY when the request also carries ``X-Gateway-Verified`` equal to the
+    # internal-tier secret (``VEXA_INTERNAL_API_SECRET`` — the gateway injects it on its /agent/* forwards
+    # and strips any client-sent copy). This is ON by default (fail closed; an unconfigured secret
+    # rejects every identity-bearing request). A single-user dev/direct topology with no gateway in front
+    # may opt out with VEXA_REQUIRE_GATEWAY_IDENTITY=0 — only then are bare X-User-Id headers and the
+    # VEXA_AGENT_DEFAULT_SUBJECT fallback trusted.
+    _require_gateway_identity = os.environ.get("VEXA_REQUIRE_GATEWAY_IDENTITY", "1").strip().lower() not in (
+        "0", "false", "no", "off")
+    _internal_secret = (
+        settings.internal_api_secret.get_secret_value() if settings is not None else ""
+    ) or os.environ.get("VEXA_INTERNAL_API_SECRET", "")
+    if not _require_gateway_identity:
+        logger.warning("VEXA_REQUIRE_GATEWAY_IDENTITY=0 — agent-api trusts unauthenticated X-User-Id headers "
+                       "and leaves /invocations + /events open; never expose this port beyond localhost")
+
+    def _secret_matches(provided: str) -> bool:
+        return bool(_internal_secret) and bool(provided) and hmac.compare_digest(
+            provided.encode(), _internal_secret.encode())
+
+    def require_internal_caller(request: Request) -> None:
+        """Gate for the internal-only sinks (/invocations, /events): the caller must present the
+        internal-tier secret (``X-Internal-Secret``, or the gateway marker). Opt-out mode skips it."""
+        if not _require_gateway_identity:
+            return
+        if _secret_matches(request.headers.get("x-internal-secret", "")) or _secret_matches(
+                request.headers.get("x-gateway-verified", "")):
+            return
+        raise HTTPException(status_code=401, detail="internal secret required")
 
     def subject_of(request: Request) -> str:
         """The authenticated subject (P20). The gateway resolves the api-key → user_id and injects
-        ``X-User-Id``; agent-api derives the workspace/chat/quota partition from THAT, never from the
-        client body/query. Fail-closed (401) when the header is absent, unless a single-user fallback
-        (``VEXA_AGENT_DEFAULT_SUBJECT``) is configured for a direct/self-host deploy with no gateway in front.
-
-        When ``VEXA_REQUIRE_GATEWAY_IDENTITY`` is set, the request must additionally carry the gateway's
-        signed identity marker (``X-Gateway-Verified``) — a hardened deploy enforces that identity headers
-        were injected by the gateway, not forged by a direct/host-local caller (see the TOPOLOGY BOUNDARY
-        note above). This does NOT change the default dev/direct topology."""
-        if _require_gateway_identity and not request.headers.get("x-gateway-verified"):
-            raise HTTPException(status_code=401,
-                                detail="gateway-signed identity required (VEXA_REQUIRE_GATEWAY_IDENTITY)")
+        ``X-User-Id`` plus the ``X-Gateway-Verified`` marker; agent-api derives the workspace/chat/quota
+        partition from THAT, never from the client body/query. Fail-closed (401) when the marker is
+        missing/wrong or the header is absent. The ``VEXA_AGENT_DEFAULT_SUBJECT`` single-user fallback is
+        honored ONLY in the explicit opt-out mode (VEXA_REQUIRE_GATEWAY_IDENTITY=0)."""
+        if _require_gateway_identity:
+            if not _secret_matches(request.headers.get("x-gateway-verified", "")):
+                raise HTTPException(status_code=401, detail="gateway-verified identity required")
+            uid = request.headers.get("x-user-id")
+            if uid:
+                return uid
+            raise HTTPException(status_code=401, detail="missing X-User-Id (agent-api is fronted by the gateway)")
         uid = request.headers.get("x-user-id")
         if uid:
             return uid
@@ -1051,8 +1073,10 @@ def create_app(
         }
 
     @app.post("/invocations", status_code=202)
-    def invocations(invocation: dict = Body(...)):
-        """The dispatcher sink — any trigger source POSTs a unit.v1 dispatch here."""
+    def invocations(request: Request, invocation: dict = Body(...)):
+        """The dispatcher sink — any trigger source POSTs a unit.v1 dispatch here. INTERNAL-ONLY: the
+        envelope names its own subject, so an open sink would let any caller dispatch as any user."""
+        require_internal_caller(request)
         try:
             workload_id = dispatcher.dispatch(invocation)
         except ValidationError as e:  # non-conformant unit.v1 envelope — fail loud (P18)
@@ -1451,7 +1475,8 @@ def create_app(
     #    the one Dispatcher. agent-api knows no tool/domain; the unit reaches email/calendar via its
     #    toolbelt. Email-triage, post-meeting, news all POST here (one front door, P6) ──
     @app.post("/events", status_code=202)
-    def events(event: dict = Body(...)):
+    def events(request: Request, event: dict = Body(...)):
+        require_internal_caller(request)  # internal-only ingress (the event names its own subject)
         try:
             invocation = event_to_invocation(event)
         except ValidationError as e:
@@ -2364,7 +2389,12 @@ def _build_production_app() -> FastAPI:
 
     settings = load_settings()
     runtime = RuntimeHttpClient(settings.runtime_api_url)
-    scheduler = SchedulerHttpClient(settings.runtime_api_url)
+    _isecret = settings.internal_api_secret.get_secret_value()
+    scheduler = SchedulerHttpClient(
+        settings.runtime_api_url,
+        # The routine fire hits the internal-only /invocations sink → carry the internal-tier secret.
+        request_headers={"X-Internal-Secret": _isecret} if _isecret else None,
+    )
     identity = LocalIdentityMinter(settings.dispatch_signing_key.get_secret_value())
     invocations_url = settings.agent_api_self_url.rstrip("/") + "/invocations"
     # Lane M: the membership index mirror (users.data.memberships[]) over the admin-api internal edge.

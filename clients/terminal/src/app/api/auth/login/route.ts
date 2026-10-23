@@ -2,6 +2,8 @@
  *  mint an APIToken (scopes bot,tx,browser), set the httpOnly `vexa-token` + `vexa-user-info` cookies.
  *
  *  Mirrors the dashboard's VEXA_ALLOW_DIRECT_LOGIN branch (without importing it). No email is ever sent.
+ *  OFF unless VEXA_ALLOW_DIRECT_LOGIN=true: it mints a token for ANY matching email with the server's
+ *  admin key (no proof of mailbox ownership) — and on a fresh instance the first login claims admin.
  *  Must never be cached — a cached response would pin one identity for every subsequent login.
  */
 import { NextResponse, type NextRequest } from "next/server";
@@ -23,6 +25,9 @@ function isSecureRequest(): boolean {
 }
 
 export async function POST(request: NextRequest) {
+  if (process.env.VEXA_ALLOW_DIRECT_LOGIN !== "true") {
+    return NextResponse.json({ error: "Not found" }, { status: 404, headers: NO_STORE });
+  }
   let email: unknown;
   try {
     ({ email } = await request.json());

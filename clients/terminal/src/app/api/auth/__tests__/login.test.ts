@@ -21,9 +21,12 @@ beforeEach(() => {
   setCookies = [];
   process.env.VEXA_ADMIN_API_URL = "http://admin.test";
   process.env.VEXA_ADMIN_API_KEY = "admin-secret";
+  // direct email login is opt-in (default 404 — see criticalAuth.test.ts); these tests exercise it ON.
+  process.env.VEXA_ALLOW_DIRECT_LOGIN = "true";
 });
 
 afterEach(() => {
+  delete process.env.VEXA_ALLOW_DIRECT_LOGIN;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });

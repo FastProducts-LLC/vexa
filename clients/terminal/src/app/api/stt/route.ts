@@ -10,6 +10,7 @@
  */
 import { NextResponse } from "next/server";
 import { resolveApiKey } from "../proxyAuth";
+import { validateAuthToken } from "../auth/adminApi";
 
 export const runtime = "nodejs";
 
@@ -21,8 +22,15 @@ interface UpstreamSegment { text?: string; words?: UpstreamWord[] }
 export async function POST(req: Request): Promise<NextResponse> {
   // Auth gate: this forwards to the shared transcription service with a server-side
   // bearer token. Without a check it's an open, credentialed Whisper proxy (cost/abuse
-  // vector) — require the same per-user key every other proxy route resolves.
-  if (!(await resolveApiKey())) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // vector). Presence of a cookie is NOT authentication (any value can be hand-crafted), so the
+  // key is VERIFIED against admin-api's /internal/validate oracle before the token is spent.
+  const apiKey = await resolveApiKey();
+  if (!apiKey) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const who = await validateAuthToken(apiKey);
+  if (!who.ok) {
+    return NextResponse.json({ error: who.status === 401 ? "Unauthorized" : who.error },
+      { status: who.status === 401 ? 401 : 503 });
+  }
 
   const base = (process.env.TRANSCRIPTION_SERVICE_URL ?? "").replace(/\/+$/, "");
   if (!base) return NextResponse.json({ error: "Transcription is not configured (TRANSCRIPTION_SERVICE_URL)" }, { status: 503 });

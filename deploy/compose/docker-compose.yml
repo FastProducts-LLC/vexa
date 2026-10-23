@@ -217,11 +217,12 @@ services:
       # (policy/members.json in the workspace git repo stays authoritative; this is the listing cache).
       - VEXA_ADMIN_API_URL=http://admin-api:8001
       - VEXA_INTERNAL_API_SECRET=${INTERNAL_API_SECRET:-vexa-internal-secret}
-      # Identity (P20): agent-api derives the subject from the gateway-injected X-User-Id. Until the terminal
-      # routes through the gateway (Stage 4), it still reaches agent-api directly with no header, so this
-      # single-user fallback keeps the dev stack working (shared subject). Remove it once the gateway fronts
-      # agent-api and X-User-Id is always present — then a missing header fails closed (401).
-      - VEXA_AGENT_DEFAULT_SUBJECT=${VEXA_AGENT_DEFAULT_SUBJECT:-u_live}
+      # Identity (P20): agent-api derives the subject from the gateway-injected X-User-Id, honored ONLY with
+      # the gateway's X-Gateway-Verified marker (== INTERNAL_API_SECRET); anything else is 401, and the
+      # internal sinks (/invocations, /events) need X-Internal-Secret. The single-user fallback subject is
+      # ignored unless VEXA_REQUIRE_GATEWAY_IDENTITY=0 (a dev-only opt-out — never on a shared network).
+      - VEXA_AGENT_DEFAULT_SUBJECT=${VEXA_AGENT_DEFAULT_SUBJECT:-}
+      - VEXA_REQUIRE_GATEWAY_IDENTITY=${VEXA_REQUIRE_GATEWAY_IDENTITY:-1}
       - VEXA_AGENT_MODEL=${VEXA_AGENT_MODEL:-}
       - VEXA_MEETING_MODEL=${VEXA_MEETING_MODEL:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}

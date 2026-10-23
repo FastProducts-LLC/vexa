@@ -35,8 +35,53 @@ export DB_PASSWORD="${DB_PASSWORD:-postgres}"
 # ─── Defaults for every var supervisord interpolates (empty is fine; must be SET) ─────────────────
 export LOG_LEVEL="${LOG_LEVEL:-info}"
 export DISPLAY="${DISPLAY:-:99}"
-export ADMIN_API_TOKEN="${ADMIN_API_TOKEN:-${ADMIN_TOKEN:-changeme}}"
-export INTERNAL_API_SECRET="${INTERNAL_API_SECRET:-lite-internal-secret}"
+export ADMIN_API_TOKEN="${ADMIN_API_TOKEN:-${ADMIN_TOKEN:-}}"
+
+# ─── Secrets — fail closed ────────────────────────────────────────────────────────────────────────
+# The gateway (and, with VEXA_LITE_ZERO_LOGIN, the UIs) face the network, so the well-known
+# historical defaults (changeme / lite-internal-secret / vexa-lite-*-secret / dev-dispatch-signing-key)
+# would hand anyone admin-api, the internal tier, forged NextAuth sessions or forged dispatch tokens.
+#   * unset/empty  → a random value is generated ONCE and persisted in ${VEXA_SECRETS_FILE}
+#                    (survives container restarts; read it with `docker exec … cat`).
+#   * a known default → refuse to start, unless VEXA_LITE_ALLOW_INSECURE_DEFAULTS=true (local demos only).
+VEXA_SECRETS_FILE="${VEXA_SECRETS_FILE:-/var/lib/vexa/generated-secrets.env}"
+mkdir -p "$(dirname "$VEXA_SECRETS_FILE")"
+if [ -f "$VEXA_SECRETS_FILE" ]; then
+    # Previously generated values fill ONLY what the operator left unset (operator env always wins).
+    while IFS='=' read -r _k _v; do
+        case "$_k" in ADMIN_API_TOKEN|INTERNAL_API_SECRET|NEXTAUTH_SECRET|JWT_SECRET|VEXA_DISPATCH_SIGNING_KEY) ;; *) continue ;; esac
+        [ -z "${!_k:-}" ] && export "${_k}=${_v}"
+    done < "$VEXA_SECRETS_FILE"
+    unset _k _v
+fi
+_insecure_default() {
+    case "$1" in
+        changeme|your_admin_api_key_here|lite-internal-secret|vexa-internal-secret|vexa-lite-nextauth-secret|vexa-lite-jwt-secret|dev-nextauth-secret|dev-dispatch-signing-key) return 0 ;;
+    esac
+    return 1
+}
+for _name in ADMIN_API_TOKEN INTERNAL_API_SECRET NEXTAUTH_SECRET JWT_SECRET VEXA_DISPATCH_SIGNING_KEY; do
+    _val="${!_name:-}"
+    if [ -z "$_val" ]; then
+        _val="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+        [ -n "$_val" ] || { echo "FATAL: could not generate ${_name}"; exit 1; }
+        ( umask 077; printf '%s=%s\n' "$_name" "$_val" >> "$VEXA_SECRETS_FILE" )
+        echo "  - ${_name}: generated (stored in ${VEXA_SECRETS_FILE})"
+    elif _insecure_default "$_val"; then
+        if [ "${VEXA_LITE_ALLOW_INSECURE_DEFAULTS:-false}" != "true" ]; then
+            echo "FATAL: ${_name} is set to a well-known default. Set a random value (or leave it unset to"
+            echo "       auto-generate one), or set VEXA_LITE_ALLOW_INSECURE_DEFAULTS=true for a throwaway local demo."
+            exit 1
+        fi
+        echo "  - WARNING: ${_name} uses a well-known default (VEXA_LITE_ALLOW_INSECURE_DEFAULTS=true)"
+    fi
+    export "${_name}=${_val}"
+done
+unset _name _val
+# Zero-login (shared self-host key for every visitor of the UIs) and the password-less direct email
+# login are OPT-IN: anyone who can reach the UI port would otherwise act as that user / any user.
+export VEXA_LITE_ZERO_LOGIN="${VEXA_LITE_ZERO_LOGIN:-false}"
+export VEXA_ALLOW_DIRECT_LOGIN="${VEXA_ALLOW_DIRECT_LOGIN:-false}"
 
 export TRANSCRIPTION_SERVICE_URL="${TRANSCRIPTION_SERVICE_URL:-}"
 export TRANSCRIPTION_SERVICE_TOKEN="${TRANSCRIPTION_SERVICE_TOKEN:-}"
@@ -54,8 +99,8 @@ export BOT_COMMAND="${BOT_COMMAND:-/usr/local/bin/vexa-bot-launch}"
 export AGENT_WORKER_COMMAND="${AGENT_WORKER_COMMAND:-/usr/local/bin/vexa-agent-worker}"
 
 # Agent control plane + worker (BYO inference; credentials brokered by the runtime).
-export VEXA_AGENT_DEFAULT_SUBJECT="${VEXA_AGENT_DEFAULT_SUBJECT:-u_live}"
-export VEXA_DISPATCH_SIGNING_KEY="${VEXA_DISPATCH_SIGNING_KEY:-dev-dispatch-signing-key}"
+# No shared fallback subject: agent-api derives identity from the gateway (fail closed).
+export VEXA_AGENT_DEFAULT_SUBJECT="${VEXA_AGENT_DEFAULT_SUBJECT:-}"
 export VEXA_BOT_API_KEY="${VEXA_BOT_API_KEY:-}"
 export VEXA_AGENT_MODEL="${VEXA_AGENT_MODEL:-}"
 export VEXA_MEETING_MODEL="${VEXA_MEETING_MODEL:-}"
@@ -78,8 +123,6 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL="${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}"
 export VEXA_PUBLIC_API_URL="${VEXA_PUBLIC_API_URL:-http://localhost:8056}"
 export VEXA_API_KEY="${VEXA_API_KEY:-}"
 export TERMINAL_PUBLIC_URL="${TERMINAL_PUBLIC_URL:-http://localhost:3001}"
-export NEXTAUTH_SECRET="${NEXTAUTH_SECRET:-vexa-lite-nextauth-secret}"
-export JWT_SECRET="${JWT_SECRET:-vexa-lite-jwt-secret}"
 
 # Workspace store for the agent (shared dir; the worker runs in-process, no volume bind).
 mkdir -p /workspaces /var/lib/redis /var/run/redis
@@ -109,9 +152,12 @@ fi
 
 # Background: once admin-api is up, mint a self-host API key and hand it to the UIs (zero-login).
 # No-op if VEXA_API_KEY was supplied. Only meaningful for the supervisord CMD (the real bring-up).
-case "$*" in
-    *supervisord*) /usr/local/bin/provision-key.sh & ;;
-esac
+# OPT-IN only (VEXA_LITE_ZERO_LOGIN=true): the minted key is shared by EVERY visitor of the UIs.
+if [ "${VEXA_LITE_ZERO_LOGIN}" = "true" ]; then
+    case "$*" in
+        *supervisord*) /usr/local/bin/provision-key.sh & ;;
+    esac
+fi
 
 echo "Starting services via supervisord..."
 exec "$@"

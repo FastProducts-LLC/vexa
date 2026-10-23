@@ -141,7 +141,7 @@ ENV VEXA_HF_CACHE=/opt/hf-cache
 COPY core/meetings/services/bot/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# noVNC (browser view) — present in the env base; harmless if unused.
-EXPOSE 6080
+# noVNC (browser view) is present in the env base but NOT exposed: the escalation live view binds
+# loopback with a per-bot password (core/meetings/modules/join/src/shared/vnc-config.ts).
 
 ENTRYPOINT ["/app/entrypoint.sh"]

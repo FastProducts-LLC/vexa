@@ -1,9 +1,16 @@
 import { spawn } from 'child_process';
-import { existsSync } from 'fs';
+import { randomBytes } from 'crypto';
+import { existsSync, mkdtempSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { log, callNeedsHumanHelpCallback } from '../_host';
+import { vncPlan } from './vnc-config';
 
 let escalationTriggered = false;
 let vncStarted = false;
+// The live view's per-process VNC password (see vnc-config.ts). Never logged; handed back only to the
+// in-process caller of startDebugView() (the local debug harness).
+let vncPassword: string | undefined;
 
 export interface EscalationResult {
   reason: string;
@@ -82,20 +89,34 @@ export async function startVncStack(): Promise<void> {
     }
   };
 
-  // x11vnc — expose existing Xvfb display
-  safeSpawn('x11vnc', ['-display', display, '-forever', '-nopw', '-shared', '-rfbport', '5900']);
+  // FAIL-CLOSED live view (vnc-config.ts): password-protected x11vnc on loopback, password passed via
+  // a 0600 self-deleting file (x11vnc `rm:`), noVNC bound to 127.0.0.1 unless VEXA_VNC_LISTEN_HOST.
+  let passwdFile: string;
+  try {
+    passwdFile = join(mkdtempSync(join(tmpdir(), 'vexa-vnc-')), 'passwd');
+  } catch (e: any) {
+    log(`[Debug] VNC skipped — cannot create password file (${e?.message})`);
+    vncStarted = true;
+    return;
+  }
+  const novncDir = '/usr/share/novnc';
+  const plan = vncPlan({
+    display, env: process.env, passwdFile, randomBytes: randomBytes(8),
+    novncWebDir: existsSync(novncDir) ? novncDir : undefined,
+  });
+  writeFileSync(passwdFile, plan.password + '\n', { mode: 0o600 });
+  vncPassword = plan.password;
+
+  // x11vnc — expose existing Xvfb display (password required, loopback only)
+  safeSpawn('x11vnc', plan.x11vncArgs);
 
   // websockify — bridge VNC to WebSocket for noVNC
-  const novncDir = '/usr/share/novnc';
-  const wsArgs = existsSync(novncDir)
-    ? ['--web', novncDir, '6080', 'localhost:5900']
-    : ['6080', 'localhost:5900'];
-  safeSpawn('websockify', wsArgs);
+  safeSpawn('websockify', plan.websockifyArgs);
 
   // Wait for VNC port to be ready (up to 3s)
   await waitForPort(5900, 3000);
   vncStarted = true;
-  log('[Debug] VNC stack started — port 5900 (VNC), 6080 (noVNC web)');
+  log(`[Debug] VNC stack started — port 5900 (VNC, loopback, password-protected), ${plan.listenHost}:6080 (noVNC web)`);
 }
 
 /**
@@ -104,12 +125,13 @@ export async function startVncStack(): Promise<void> {
  * join, not only when the bot gets stuck. Pixels via VNC/noVNC (Linux), control
  * via CDP (any platform). Returns the endpoints so a runner can print them.
  */
-export async function startDebugView(): Promise<{ vncUrl?: string; novncUrl?: string; cdpUrl: string }> {
+export async function startDebugView(): Promise<{ vncUrl?: string; novncUrl?: string; vncPassword?: string; cdpUrl: string }> {
   await startVncStack();
   const onLinux = process.platform === 'linux' && !!process.env.DISPLAY;
   return {
     vncUrl: onLinux ? 'vnc://localhost:5900' : undefined,
     novncUrl: onLinux ? 'http://localhost:6080/vnc.html' : undefined,
+    vncPassword: onLinux ? vncPassword : undefined,
     cdpUrl: 'http://localhost:9222', // Playwright connectOverCDP target
   };
 }

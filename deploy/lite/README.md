@@ -29,10 +29,17 @@ host network, and probes the front doors. Set `TRANSCRIPTION_SERVICE_URL` /
 
 After it finishes:
 
-- **Dashboard:** `http://YOUR_IP:3000`
-- **Terminal:** `http://YOUR_IP:3001` (the agent-domain browser-CLI workbench)
-- **API:** `http://YOUR_IP:8056` (the gateway — auth, routing) · docs at `/docs`
-- **Agent API:** `http://YOUR_IP:8100`
+- **Dashboard:** `http://127.0.0.1:3000`
+- **Terminal:** `http://127.0.0.1:3001` (the agent-domain browser-CLI workbench)
+- **API:** `http://127.0.0.1:8056` (the gateway — auth, routing) · docs at `/docs`; the agent
+  control plane is reached through it under `/agent/*`
+
+The front doors are published on loopback (`HOST_BIND=127.0.0.1`); put a TLS reverse proxy in front
+or set `HOST_BIND=0.0.0.0` deliberately. Unset secrets (`ADMIN_TOKEN`, `INTERNAL_API_SECRET`,
+`NEXTAUTH_SECRET`, `JWT_SECRET`, `VEXA_DISPATCH_SIGNING_KEY`) are generated on first boot and kept in
+`/var/lib/vexa/generated-secrets.env` inside the container; the old well-known defaults (`changeme`, …)
+are refused. Zero-login (`VEXA_LITE_ZERO_LOGIN=true`) and direct email login
+(`VEXA_ALLOW_DIRECT_LOGIN=true`) are opt-in — both let anyone who reaches the UI act as a user.
 
 To stop: `make lite-down` (data volumes are kept; `docker volume rm vexa-lite-pgdata
 vexa-lite-miniodata` to wipe).
@@ -47,12 +54,12 @@ Supervised by `supervisord`:
 | admin-api | 8001 | users + API keys + `/internal/validate` |
 | meeting-api | 8080 | bots, transcripts, recordings (→ MinIO) |
 | runtime | 8090 | spawns bot + agent workers as **child processes** (process backend) |
-| agent-api | **8100** | the agent control plane — dispatch, chat (SSE), routines |
+| agent-api | 8100 (loopback) | the agent control plane — dispatch, chat (SSE), routines; fronted by the gateway `/agent/*` |
 | dashboard | **3000** | Next.js web UI (meetings + transcripts) |
 | terminal | **3001** | agent-domain browser-CLI workbench (Next.js + custom `server.mjs` SSE/`/ws` relay) |
 | redis | 6379 | bus + scheduler + per-dispatch streams (internal) |
 | Xvfb · fluxbox · PulseAudio | :99 | display + audio for the headful bot browser |
-| x11vnc · noVNC | 5900 / 6080 | browser view (debugging) |
+| x11vnc · noVNC | 5900 / 6080 (loopback) | browser view (debugging; `docker exec`/SSH tunnel only) |
 
 External (the `make lite` sidecars): **PostgreSQL** (metadata) and **MinIO** (recordings +
 agent workspaces).
@@ -88,7 +95,7 @@ The repo-root `.env` (auto-seeded from `deploy/compose/.env` if present, else mi
 | Variable | Default | Description |
 |---|---|---|
 | `TRANSCRIPTION_SERVICE_URL` / `_TOKEN` | — | STT endpoint + key. Unset → bots capture, no transcript |
-| `ADMIN_TOKEN` | `changeme` | admin API token (the stack's shared admin secret) |
+| `ADMIN_TOKEN` | random (generated) | admin API token (the stack's shared admin secret); `changeme` is refused |
 | `IMAGE_TAG` | `latest` | the `vexaai/vexa-lite` tag to pull (a local `vexa-lite:dev` build wins) |
 
 Agent inference is BYO — point the runtime at your endpoint via `ANTHROPIC_*` / `VEXA_AGENT_MODEL`
@@ -120,4 +127,4 @@ Outgrow lite? Switch to [compose](../compose/README.md) — same images, same co
 |---|---|
 | Shared X11 display | bots share one Xvfb (`:99`) — best for one browser session at a time |
 | Ephemeral redis | internal redis is in-container; mount `/var/lib/redis` for persistence |
-| Agent ↔ gateway | the agent control plane is reached directly on `:8100` (gateway-fronting is roadmap) |
+| Agent ↔ gateway | the agent control plane is reached through the gateway (`/agent/*`); `:8100` is loopback-only |
