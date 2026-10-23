@@ -125,3 +125,32 @@ def test_scheduler_client_stamps_internal_secret_on_jobs(monkeypatch):
     client.schedule({"cron": "* * * * *", "request": {"method": "POST", "url": "http://a/invocations",
                                                       "body": {}}})
     assert seen["body"]["request"]["headers"] == {"X-Internal-Secret": SECRET}
+
+
+def test_meeting_owner_lookup_stamps_gateway_marker(monkeypatch):
+    """agent-api's own X-User-Id hop to meeting-api must carry the gateway marker (meeting-api
+    honors x-user-* only with X-Gateway-Verified == the internal secret)."""
+    import urllib.request
+
+    from control_plane.api import _http_meeting_owner_lookup
+
+    seen = []
+
+    class _Resp(io.BytesIO):
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen.append({k.lower(): v for k, v in req.header_items()})
+        return _Resp(json.dumps({"id": 5, "native_meeting_id": "abc"}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert _http_meeting_owner_lookup("http://meeting-api:8080", internal_secret="isec")("7", "5")["id"] == 5
+    assert seen[-1]["x-gateway-verified"] == "isec" and seen[-1]["x-user-id"] == "7"
+    _http_meeting_owner_lookup("http://meeting-api:8080")("7", "5")
+    assert "x-gateway-verified" not in seen[-1]

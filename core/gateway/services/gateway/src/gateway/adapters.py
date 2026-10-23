@@ -83,6 +83,10 @@ class AdminApiAuthorizer:
         auth_headers = {"X-API-Key": api_key, TRACE_HEADER: get_trace_id() or ""}
         user_data = await self.resolve(api_key)
         if user_data:
+            # meeting-api honors x-user-* only alongside the gateway marker (== INTERNAL_API_SECRET).
+            internal_secret = os.getenv("INTERNAL_API_SECRET", "")
+            if internal_secret:
+                auth_headers["x-gateway-verified"] = internal_secret
             auth_headers["x-user-id"] = str(user_data["user_id"])
             auth_headers["x-user-scopes"] = ",".join(user_data.get("scopes", []))
             auth_headers["x-user-limits"] = str(user_data.get("max_concurrent", 3))

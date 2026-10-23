@@ -23,6 +23,15 @@ def _stt_configured(monkeypatch):
     monkeypatch.setenv("TRANSCRIPTION_SERVICE_TOKEN", "test-stt-token")
 
 
+@pytest.fixture(autouse=True)
+def _dev_mode_identity_edge(monkeypatch):
+    """The suite drives routes with a bare ``x-user-id`` (the gateway hop is out of scope here), so it
+    runs as a DEV_MODE deployment with no INTERNAL_API_SECRET — the gateway trust edge is open. The edge
+    itself (marker required, fail-closed) is pinned in tests/test_internal_auth.py."""
+    monkeypatch.setenv("DEV_MODE", "true")
+    monkeypatch.delenv("INTERNAL_API_SECRET", raising=False)
+
+
 # --- lifecycle.v1 goldens (the seam) ---------------------------------------------------
 
 def _repo_root() -> Path:

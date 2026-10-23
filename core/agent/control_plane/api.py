@@ -904,7 +904,7 @@ def _context_grounding(
 # record's `native_meeting_id` also lets us confirm the requested `session_uid` belongs to the SAME owned
 # meeting, so B can't pair its own row with A's native to sniff A's copilot out-stream. Returns the owned
 # meeting record (dict) on success, else None. Injectable so the L2 suite drives it over a fake.
-def _http_meeting_owner_lookup(meeting_api_url: str):
+def _http_meeting_owner_lookup(meeting_api_url: str, internal_secret: str = ""):
     """Build the default owner-lookup: GET {meeting_api_url}/meetings/{id} with the caller's X-User-Id.
     Returns a callable ``(user_id: str, meeting_id: str) -> dict | None`` (the owned meeting record, or
     None when the row is absent / owned by someone else / meeting-api is unreachable — fail-closed)."""
@@ -917,8 +917,10 @@ def _http_meeting_owner_lookup(meeting_api_url: str):
         if not base or not user_id or not str(meeting_id).isdigit():
             return None  # non-numeric row id can't be an owned meeting row → fail closed
         try:
-            req = urllib.request.Request(
-                f"{base}/meetings/{int(meeting_id)}", headers={"X-User-Id": str(user_id)})
+            headers = {"X-User-Id": str(user_id)}
+            if internal_secret:
+                headers["X-Gateway-Verified"] = internal_secret
+            req = urllib.request.Request(f"{base}/meetings/{int(meeting_id)}", headers=headers)
             with urllib.request.urlopen(req, timeout=5) as resp:
                 if resp.status != 200:
                     return None
@@ -962,8 +964,11 @@ def create_app(
     app.state.scheduler = scheduler
     settings = dispatcher.settings if dispatcher is not None else None
     # The SSE ownership gate's owner-lookup (P0): default = HTTP to meeting-api; injectable for L2 tests.
+    # meeting-api honors X-User-Id only with the X-Gateway-Verified marker (== the internal-tier secret),
+    # so agent-api's own identity-scoped hops to it carry the marker too.
+    _mapi_secret = settings.internal_api_secret.get_secret_value() if settings is not None else ""
     _meeting_owner_lookup = meeting_owner_lookup or _http_meeting_owner_lookup(
-        settings.meeting_api_url if settings is not None else "")
+        settings.meeting_api_url if settings is not None else "", internal_secret=_mapi_secret)
 
     def _owned_meeting(subject: str, meeting_id) -> "dict | None":
         """The meeting row ONLY if ``subject`` OWNS it. meeting-api's GET /meetings/{id} also returns rows
@@ -980,7 +985,7 @@ def create_app(
     # The ambient schedule digest's rows source (context bundle): TTL-cached meeting-api fetch;
     # injectable for L2 tests, same seam style as meeting_owner_lookup.
     _schedule_source = schedule_source or schedule_digest_mod.digest_source(
-        settings.meeting_api_url if settings is not None else "", mindex.list)
+        settings.meeting_api_url if settings is not None else "", mindex.list, internal_secret=_mapi_secret)
 
     # TOPOLOGY BOUNDARY (Lane M vector 3): agent-api trusts X-User-Id / X-User-Email as ground truth.
     # That trust is only SOUND when the gateway is the SOLE ingress — the gateway strips any client-sent
