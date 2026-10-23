@@ -11,6 +11,10 @@ set -e
 Xvfb :99 -screen 0 1920x1080x24 -ac +extension RANDR >/tmp/xvfb.log 2>&1 &
 export DISPLAY=:99
 export DEBUG_ADMISSION=1   # rich admission DOM dumps for oracle debugging
+# noVNC must listen on the container interface for `docker run -p 127.0.0.1:6080:6080` to reach it
+# (the Makefile publishes on HOST loopback only). x11vnc itself stays loopback + password-protected;
+# the password is printed by debug-join.ts.
+export VEXA_VNC_LISTEN_HOST="${VEXA_VNC_LISTEN_HOST:-0.0.0.0}"
 ( command -v fluxbox >/dev/null && fluxbox >/tmp/fluxbox.log 2>&1 & ) || true
 
 for i in $(seq 1 20); do xdpyinfo -display :99 >/dev/null 2>&1 && break; sleep 0.25; done

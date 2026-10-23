@@ -34,7 +34,9 @@ APP_CONTAINER   ?= vexa-lite
 HOST_GATEWAY_PORT   ?= 8056
 HOST_DASHBOARD_PORT ?= 3000
 HOST_TERMINAL_PORT  ?= 3001
-HOST_AGENT_PORT     ?= 8100
+# Host interface the front doors are published on. Loopback by default — put a TLS reverse proxy in
+# front (or set HOST_BIND=0.0.0.0 deliberately) to expose them.
+HOST_BIND           ?= 127.0.0.1
 MINIO_ACCESS_KEY ?= vexa-access-key
 MINIO_SECRET_KEY ?= vexa-secret-key
 MINIO_BUCKET     ?= vexa
@@ -58,8 +60,7 @@ all: env preflight up init-db test
 	echo ""; echo "Vexa Lite is running."; \
 	echo "  Dashboard: http://$$HOST:$(HOST_DASHBOARD_PORT)"; \
 	echo "  Terminal:  http://$$HOST:$(HOST_TERMINAL_PORT)"; \
-	echo "  API docs:  http://$$HOST:$(HOST_GATEWAY_PORT)/docs"; \
-	echo "  Agent API: http://$$HOST:$(HOST_AGENT_PORT)"
+	echo "  API docs:  http://$$HOST:$(HOST_GATEWAY_PORT)/docs"
 
 ## env — ensure a repo-root .env exists (seed from compose/.env if present, else a minimal template).
 env:
@@ -68,7 +69,7 @@ env:
 			echo "Seeding $(ENV_FILE) from deploy/compose/.env"; cp "$(ROOT)/deploy/compose/.env" "$(ENV_FILE)"; \
 		else \
 			echo "Creating minimal $(ENV_FILE) (edit TRANSCRIPTION_SERVICE_* for transcripts)"; \
-			printf 'ADMIN_TOKEN=changeme\nTRANSCRIPTION_SERVICE_URL=\nTRANSCRIPTION_SERVICE_TOKEN=\nIMAGE_TAG=latest\n' > "$(ENV_FILE)"; \
+			printf 'ADMIN_TOKEN=%s\nTRANSCRIPTION_SERVICE_URL=\nTRANSCRIPTION_SERVICE_TOKEN=\nIMAGE_TAG=latest\n' "$$(openssl rand -hex 32)" > "$(ENV_FILE)"; \
 		fi; \
 	fi
 
@@ -81,7 +82,7 @@ preflight:
 up: preflight
 	@set -e; \
 	docker network inspect $(NETWORK) >/dev/null 2>&1 || docker network create $(NETWORK) >/dev/null; \
-	ADMIN_TK=$$(grep -E '^ADMIN_TOKEN=' $(ENV_FILE) 2>/dev/null | cut -d= -f2-); ADMIN_TK=$${ADMIN_TK:-changeme}; \
+	ADMIN_TK=$$(grep -E '^ADMIN_TOKEN=' $(ENV_FILE) 2>/dev/null | cut -d= -f2-); \
 	TX_URL=$$(grep -E '^TRANSCRIPTION_SERVICE_URL=' $(ENV_FILE) 2>/dev/null | cut -d= -f2-); \
 	TX_TOKEN=$$(grep -E '^TRANSCRIPTION_SERVICE_TOKEN=' $(ENV_FILE) 2>/dev/null | cut -d= -f2-); \
 	IMAGE_TAG=$$(grep -E '^IMAGE_TAG=' $(ENV_FILE) 2>/dev/null | cut -d= -f2-); IMAGE_TAG=$${IMAGE_TAG:-latest}; \
@@ -111,7 +112,7 @@ up: preflight
 	docker rm -f $(APP_CONTAINER) 2>/dev/null || true; \
 	docker run -d --name $(APP_CONTAINER) --shm-size=2g --network $(NETWORK) --restart unless-stopped \
 		--env-file $(ENV_FILE) \
-		-p $(HOST_GATEWAY_PORT):8056 -p $(HOST_DASHBOARD_PORT):3000 -p $(HOST_TERMINAL_PORT):3001 -p $(HOST_AGENT_PORT):8100 \
+		-p $(HOST_BIND):$(HOST_GATEWAY_PORT):8056 -p $(HOST_BIND):$(HOST_DASHBOARD_PORT):3000 -p $(HOST_BIND):$(HOST_TERMINAL_PORT):3001 \
 		-e DB_HOST=$(PG_CONTAINER) -e DB_PORT=5432 -e DB_NAME=vexa -e DB_USER=postgres -e DB_PASSWORD=postgres \
 		-e ADMIN_API_TOKEN=$$ADMIN_TK -e ADMIN_TOKEN=$$ADMIN_TK \
 		-e TRANSCRIPTION_SERVICE_URL=$$TX_URL -e TRANSCRIPTION_SERVICE_TOKEN=$$TX_TOKEN \
@@ -130,7 +131,7 @@ init-db:
 
 ## test — probe the published front doors.
 test:
-	@FAIL=0; for ep in "$(HOST_GATEWAY_PORT):gateway" "$(HOST_AGENT_PORT):agent-api" "$(HOST_DASHBOARD_PORT):dashboard" "$(HOST_TERMINAL_PORT):terminal"; do \
+	@FAIL=0; for ep in "$(HOST_GATEWAY_PORT):gateway" "$(HOST_DASHBOARD_PORT):dashboard" "$(HOST_TERMINAL_PORT):terminal"; do \
 		PORT=$${ep%%:*}; NAME=$${ep##*:}; \
 		if curl -sf -o /dev/null http://localhost:$$PORT/ 2>/dev/null || curl -sf -o /dev/null http://localhost:$$PORT/health 2>/dev/null; then \
 			echo "  ✓ $$NAME (:$$PORT)"; else echo "  ✗ $$NAME not responding (:$$PORT)"; FAIL=1; fi; \

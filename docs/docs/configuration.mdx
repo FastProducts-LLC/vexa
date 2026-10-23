@@ -57,7 +57,7 @@ Point the agent at your own model so no inference leaves the network.
 | `ANTHROPIC_API_KEY` | — | Key for Anthropic-backed runners. |
 | `ANTHROPIC_MODEL` · `ANTHROPIC_DEFAULT_OPUS_MODEL` · `…_SONNET_MODEL` · `…_HAIKU_MODEL` | — | Per-tier model overrides. |
 | `HOST_CLAUDE_CREDENTIALS` | — | Host path to Claude credentials mounted into agent containers (see below). |
-| `VEXA_AGENT_DEFAULT_SUBJECT` | `u_live` | Fallback subject before the gateway fronts agent-api. |
+| `VEXA_AGENT_DEFAULT_SUBJECT` | (empty) | Single-user fallback subject; honored only with `VEXA_REQUIRE_GATEWAY_IDENTITY=0` (dev). |
 
 ### Claude subscription credentials (`HOST_CLAUDE_CREDENTIALS`)
 

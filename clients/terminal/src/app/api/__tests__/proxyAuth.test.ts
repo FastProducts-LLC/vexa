@@ -27,11 +27,12 @@ afterEach(() => {
   jar = new Map();
   delete process.env.VEXA_API_KEY;
   delete process.env.VEXA_BOT_API_KEY;
+  delete process.env.VEXA_ALLOW_SHARED_API_KEY;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
-describe("resolveApiKey — cookie token with env fallback", () => {
+describe("resolveApiKey — cookie token; env fallback is opt-in", () => {
   it("prefers the vexa-token cookie", async () => {
     jar.set("vexa-token", "user-token-123");
     process.env.VEXA_API_KEY = "env-key";
@@ -39,7 +40,14 @@ describe("resolveApiKey — cookie token with env fallback", () => {
     expect(await resolveApiKey()).toBe("user-token-123");
   });
 
-  it("falls back to VEXA_API_KEY, then VEXA_BOT_API_KEY", async () => {
+  it("an anonymous caller (no cookie) NEVER inherits the server's shared keys by default", async () => {
+    process.env.VEXA_API_KEY = "env-key";
+    process.env.VEXA_BOT_API_KEY = "bot-key";
+    expect(await resolveApiKey()).toBe("");
+  });
+
+  it("with VEXA_ALLOW_SHARED_API_KEY=true falls back to VEXA_API_KEY, then VEXA_BOT_API_KEY", async () => {
+    process.env.VEXA_ALLOW_SHARED_API_KEY = "true";
     process.env.VEXA_API_KEY = "env-key";
     process.env.VEXA_BOT_API_KEY = "bot-key";
     expect(await resolveApiKey()).toBe("env-key");
@@ -71,7 +79,24 @@ describe("catch-all proxy — meetings domain forwards the cookie token as X-API
     expect(seen.key).toBe("cookie-tok");
   });
 
-  it("falls back to VEXA_BOT_API_KEY when no cookie is present", async () => {
+  it("forwards an EMPTY key (→ gateway 401) for an anonymous caller even if VEXA_BOT_API_KEY is set", async () => {
+    process.env.VEXA_BOT_API_KEY = "legacy-bot-key";
+    const seen: { key?: string } = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        seen.key = (init?.headers as Record<string, string>)?.["X-API-Key"];
+        return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+      }),
+    );
+
+    await catchAllGet(makeReq(), { params: Promise.resolve({ path: ["meetings"] }) });
+
+    expect(seen.key).toBe("");
+  });
+
+  it("falls back to VEXA_BOT_API_KEY when no cookie is present (opt-in shared-key mode)", async () => {
+    process.env.VEXA_ALLOW_SHARED_API_KEY = "true";
     process.env.VEXA_BOT_API_KEY = "legacy-bot-key";
     const seen: { key?: string } = {};
     vi.stubGlobal(

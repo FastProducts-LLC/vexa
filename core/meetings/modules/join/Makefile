@@ -33,7 +33,7 @@ debug:
 	@echo ""
 	@echo "  Watch live →  http://localhost:6080/vnc.html"
 	@echo ""
-	docker run --rm -it -p 6080:6080 $(SRC_MOUNT) -e MEETING_URL="$(URL)" $(IMAGE)
+	docker run --rm -it -p 127.0.0.1:6080:6080 $(SRC_MOUNT) -e MEETING_URL="$(URL)" $(IMAGE)
 
 # Same container, DIFFERENT network position — the egress IP is the only variable
 # (#444: Google's gate keys on IP reputation). CLOUD_HOST is any ssh-able box:
@@ -47,7 +47,7 @@ debug-cloud:
 	@echo ""
 	@echo "  Watch live (tunneled) →  http://localhost:6080/vnc.html"
 	@echo ""
-	ssh -t -L 6080:localhost:6080 $(CLOUD_HOST) 'cd /tmp/meet-join-debug && docker run --rm -p 6080:6080 -v /tmp/meet-join-debug/src:/pkg/src -v /tmp/meet-join-debug/scripts:/pkg/scripts -e MEETING_URL="$(URL)" $(IMAGE)'
+	ssh -t -L 6080:localhost:6080 $(CLOUD_HOST) 'cd /tmp/meet-join-debug && docker run --rm -p 127.0.0.1:6080:6080 -v /tmp/meet-join-debug/src:/pkg/src -v /tmp/meet-join-debug/scripts:/pkg/scripts -e MEETING_URL="$(URL)" $(IMAGE)'
 
 # Rate-limit probe — repeated joins at a controlled cadence from THIS egress,
 # logging outcomes, to find where the platform throttles the IP. Fresh URLs in

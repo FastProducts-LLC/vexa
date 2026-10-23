@@ -55,12 +55,14 @@ beforeEach(() => {
   process.env.VEXA_ADMIN_API_KEY = "admin-key";
   process.env.VEXA_INTERNAL_API_SECRET = "internal-secret";
   delete process.env.VEXA_ADMIN_EMAILS;
+  process.env.VEXA_ALLOW_DIRECT_LOGIN = "true"; // the claim is exercised through the (opt-in) direct login
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   delete process.env.VEXA_ADMIN_EMAILS;
+  delete process.env.VEXA_ALLOW_DIRECT_LOGIN;
 });
 
 describe("/api/auth/instance — the login surface's claim-screen switch", () => {

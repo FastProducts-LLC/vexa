@@ -47,8 +47,11 @@ def transcription_golden() -> dict:
 def _default_subject(monkeypatch):
     """The HTTP tests exercise agent-api with no gateway in front, so set the single-user fallback
     (``VEXA_AGENT_DEFAULT_SUBJECT``) — agent-api derives the subject from it when ``X-User-Id`` is absent.
-    Tests that assert per-user *isolation* pass an explicit ``X-User-Id`` header, which always wins (P20)."""
+    Tests that assert per-user *isolation* pass an explicit ``X-User-Id`` header, which always wins (P20).
+    These suites run the explicit dev/direct opt-out (VEXA_REQUIRE_GATEWAY_IDENTITY=0); the fail-closed
+    production default is covered by test_gateway_identity.py, which overrides this."""
     monkeypatch.setenv("VEXA_AGENT_DEFAULT_SUBJECT", "u_jane")
+    monkeypatch.setenv("VEXA_REQUIRE_GATEWAY_IDENTITY", "0")
 
 
 @pytest.fixture(autouse=True)
