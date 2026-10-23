@@ -76,6 +76,11 @@ def create_app(
     app = FastAPI(title="Vexa Meeting API (v0.12)", version="0.12.0")
     # The edge: read/mint X-Trace-Id and bind it for the request (logevent.v1 trace_id).
     app.add_middleware(TraceMiddleware)
+    # Gateway trust edge: any request asserting an x-user-* identity must carry the gateway's
+    # X-Gateway-Verified marker == INTERNAL_API_SECRET (fails closed when INTERNAL_API_SECRET is unset outside DEV_MODE). See internal_auth.py.
+    from .internal_auth import InternalIdentityMiddleware
+
+    app.add_middleware(InternalIdentityMiddleware)
 
     # --- shared liveness probe (gate:health): the unified process is up. No auth. The ADDITIVE
     # `capabilities` rows are the config.v1 tri-states (stt · object_storage) incl. the cached STT

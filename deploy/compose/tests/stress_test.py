@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from conftest import post_json, requires_docker
+from conftest import INTERNAL_API_SECRET, post_json, requires_docker
 from mock_scenarios_test import _spawn, _stop_bot, _wait_meeting
 from stack_test import _create_user
 
@@ -65,7 +65,7 @@ def test_stress_max_bots_never_overspills(stack):
             f"{stack.meeting_api}/bots",
             {"platform": "google_meet", "native_meeting_id": f"cont-{i}-{uuid.uuid4().hex[:4]}", "bot_name": "mock:immediate-stop",
              "transcribe_enabled": False},
-            headers={"x-user-id": str(user_id), "x-user-limits": str(cap)},
+            headers={"x-gateway-verified": INTERNAL_API_SECRET, "x-user-id": str(user_id), "x-user-limits": str(cap)},
         )
         return code
 

@@ -54,6 +54,46 @@ def _require_config(env: "os._Environ | dict | None" = None) -> None:
     from .config_preflight import preflight
 
     preflight(env)
+    _reject_default_secrets(env)
+
+
+# The well-known placeholder values the stock compose file / .env.example fall back to. A deploy
+# that boots with one of these is running with a PUBLIC secret (MeetingToken forgery, internal-edge
+# impersonation, DB/object-store access), so outside DEV_MODE the boot refuses instead.
+_KNOWN_DEFAULT_SECRETS = {
+    "ADMIN_TOKEN": {"changeme", "dev-admin-token"},
+    "INTERNAL_API_SECRET": {"vexa-internal-secret"},
+    "DB_PASSWORD": {"postgres"},
+    "MINIO_SECRET_KEY": {"vexa-secret-key"},
+}
+
+
+def _reject_default_secrets(env: "os._Environ | dict | None" = None) -> None:
+    """Raise ``ConfigError`` naming every secret still set to a known placeholder, unless
+    ``DEV_MODE=true``. DB_PASSWORD is only checked when the URL is derived from the DB_* parts
+    (no explicit DATABASE_URL); MINIO_SECRET_KEY only when S3_SECRET_KEY does not override it."""
+    from .config_preflight import ConfigError
+
+    env = os.environ if env is None else env
+    if (env.get("DEV_MODE") or "false").strip().lower() == "true":
+        return
+    skip = set()
+    if (env.get("DATABASE_URL") or "").strip():
+        skip.add("DB_PASSWORD")
+    if (env.get("S3_SECRET_KEY") or "").strip():
+        skip.add("MINIO_SECRET_KEY")
+    # An UNSET DB_PASSWORD falls back to the code default "postgres" (_database_url) — same exposure.
+    effective = {k: (env.get(k) or "").strip() for k in _KNOWN_DEFAULT_SECRETS}
+    effective["DB_PASSWORD"] = effective["DB_PASSWORD"] or "postgres"
+    bad = sorted(
+        k for k, defaults in _KNOWN_DEFAULT_SECRETS.items()
+        if k not in skip and effective[k] in defaults
+    )
+    if bad:
+        raise ConfigError(
+            "meeting-api refuses to boot — these secrets are still set to a published default "
+            f"value: {', '.join(bad)}. Set real values (or DEV_MODE=true for local development only)."
+        )
 
 
 def build_production_app():
