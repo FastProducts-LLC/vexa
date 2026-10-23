@@ -62,6 +62,10 @@ async def get_current_user(api_key: str = Security(USER_KEY_HEADER),
     row = (await db.execute(select(APIToken).where(APIToken.token == api_key))).scalars().first()
     if not row:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Invalid API Key")
+    # Same expiry rule as /internal/validate: an expired (e.g. revoked-by-TTL) key must not keep
+    # read/write access to the owner's /user/* config (webhook secret, model/STT credentials).
+    if row.expires_at is not None and row.expires_at < datetime.utcnow():
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Token expired")
     token_scopes = set(row.scopes) if row.scopes else set()
     if not token_scopes & VALID_SCOPES:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Token scope not authorized for this endpoint")

@@ -46,7 +46,7 @@ def test_create_with_link_and_time_is_scheduled():
     r = client.post("/meetings", json={
         "title": "Q3 kickoff", "scheduled_at": AT, "meeting_url": URL,
         "workspace_id": "ws-1",
-    }, headers=H)
+    }, headers={**H, "x-user-workspaces": "ws-1"})
     assert r.status_code == 201, r.text
     row = r.json()
     assert row["status"] == "scheduled"
@@ -155,7 +155,7 @@ def test_patch_workspace_bind_and_unbind():
     client, _store, _redis = _client()
     mid = client.post("/meetings", json={"title": "x"}, headers=H).json()["id"]
     assert client.patch(f"/meetings/{mid}", json={"workspace_id": "ws-9"},
-                        headers=H).json()["data"]["workspace_id"] == "ws-9"
+                        headers={**H, "x-user-workspaces": "ws-9"}).json()["data"]["workspace_id"] == "ws-9"
     row = client.patch(f"/meetings/{mid}", json={"workspace_id": None}, headers=H).json()
     assert "workspace_id" not in row["data"]
 
@@ -209,7 +209,7 @@ def test_workspace_member_sees_planned_meeting_as_shared():
     client, _store, _redis = _client()
     client.post("/meetings", json={
         "title": "Client prep", "scheduled_at": AT, "workspace_id": "ws-42",
-    }, headers=H)
+    }, headers={**H, "x-user-workspaces": "ws-42"})
     # another user, member of ws-42 (gateway injects x-user-workspaces)
     r = client.get("/meetings", headers={"x-user-id": "99", "x-user-workspaces": "ws-42"})
     rows = r.json()["meetings"]
@@ -220,7 +220,8 @@ def test_workspace_member_sees_planned_meeting_as_shared():
 
 def test_non_member_does_not_see_planned_meeting():
     client, _store, _redis = _client()
-    client.post("/meetings", json={"title": "secret", "workspace_id": "ws-42"}, headers=H)
+    client.post("/meetings", json={"title": "secret", "workspace_id": "ws-42"},
+                headers={**H, "x-user-workspaces": "ws-42"})
     r = client.get("/meetings", headers={"x-user-id": "99", "x-user-workspaces": "ws-other"})
     assert r.json()["meetings"] == []
 

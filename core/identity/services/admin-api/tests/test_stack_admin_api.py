@@ -177,6 +177,24 @@ def test_expired_token_rejected(client):
     assert "expired" in r.json()["detail"].lower()
 
 
+def test_expired_token_rejected_on_user_tier(client):
+    """The /user/* self-serve tier enforces the SAME expiry as /internal/validate: an expired key can
+    neither read nor overwrite the owner's webhook config (it used to pass get_current_user)."""
+    user_id = client.post("/admin/users", headers=_admin(),
+                          json={"email": "d2@vexa.ai"}).json()["id"]
+    live = client.post(f"/admin/users/{user_id}/tokens?scope=bot", headers=_admin()).json()["token"]
+    stale = client.post(f"/admin/users/{user_id}/tokens?scope=bot&expires_in=1",
+                        headers=_admin()).json()["token"]
+    import time
+    time.sleep(1.5)
+    assert client.get("/user/webhook", headers={"X-API-Key": stale}).status_code == 401
+    r = client.put("/user/webhook", headers={"X-API-Key": stale},
+                   json={"webhook_url": "https://attacker.example/hook"})
+    assert r.status_code == 401
+    # The non-expiring key of the same user still works (legit flow untouched).
+    assert client.get("/user/webhook", headers={"X-API-Key": live}).status_code == 200
+
+
 def test_invalid_scope_422(client):
     """Minting a token with an unknown scope → 422."""
     user_id = client.post("/admin/users", headers=_admin(),

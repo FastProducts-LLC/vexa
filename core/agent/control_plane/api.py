@@ -810,14 +810,38 @@ def _enriched_meeting_focus(focus: dict, rows: "list[dict]") -> dict:
     return merged
 
 
+def _meeting_focus_readable(focus: dict, rows: "list[dict]",
+                            meeting_readable: "Optional[Callable[[str], bool]]") -> bool:
+    """May THIS caller's chat fold the carriers (``tc:``/``proc:meeting:{key}``) a meeting focus points at?
+
+    The fold key is the CLIENT-SENT row id (or the native id as a fallback) — row ids are sequential, so an
+    unchecked key folds ANOTHER tenant's transcript / processed notes into the caller's prompt (cross-tenant
+    read). A numeric key must be one of the caller's readable rows (the per-subject schedule rows, which
+    already include share/membership grants), else a live ``meeting_readable`` lookup (the rows source is
+    TTL-cached, so a just-spawned meeting may not be in it yet). A non-numeric native code is never written
+    by the collector (P0 keys every carrier by row id), so it cannot reach anyone else's feed."""
+    m = focus.get("meeting") or focus  # same {kind, meeting:{…}} / flat tolerance as _meeting_grounding
+    key = str(m.get("meeting_id") or m.get("native_id") or m.get("ref") or "")
+    if not key.isdigit():
+        return True
+    if any(str(r.get("id")) == key for r in rows or []):
+        return True
+    try:
+        return bool(meeting_readable is not None and meeting_readable(key))
+    except Exception:  # noqa: BLE001 — a failed lookup fails CLOSED (no fold), never fails the turn
+        return False
+
+
 def _context_grounding(
     body: "ChatBody", session: str, redis_url: "str | None", *,
     schedule_rows: "Callable[[], list[dict]]",
     workspace_mounts: "Callable[[], list]",
+    meeting_readable: "Optional[Callable[[str], bool]]" = None,
 ) -> "tuple[dict, list[str], str]":
     """Assemble the turn's grounding from the context bundle (or the legacy ``active``).
     ``schedule_rows`` / ``workspace_mounts`` are LAZY — fetched only for the branches that
-    need them, and both degrade to empty on failure (a bundle must never fail the turn)."""
+    need them, and both degrade to empty on failure (a bundle must never fail the turn).
+    ``meeting_readable(row_id)`` authorizes a meeting focus not found in the caller's rows."""
     prompt = body.prompt
     context = body.context
     focus = context.focus if context is not None else body.active
@@ -848,6 +872,9 @@ def _context_grounding(
 
     if kind == "meeting":
         enriched = _enriched_meeting_focus(dict(focus), rows) if rows else dict(focus)
+        if not _meeting_focus_readable(enriched, rows, meeting_readable):
+            # Not the caller's meeting → fold NOTHING from its carriers (fail closed, turn still runs).
+            return (ctx, [], preamble + prompt)
         _c, _t, folded_prompt = _meeting_grounding(enriched, session, prompt, redis_url)
         return (_c, _t, preamble + folded_prompt if preamble else folded_prompt)
 
@@ -937,6 +964,19 @@ def create_app(
     # The SSE ownership gate's owner-lookup (P0): default = HTTP to meeting-api; injectable for L2 tests.
     _meeting_owner_lookup = meeting_owner_lookup or _http_meeting_owner_lookup(
         settings.meeting_api_url if settings is not None else "")
+
+    def _owned_meeting(subject: str, meeting_id) -> "dict | None":
+        """The meeting row ONLY if ``subject`` OWNS it. meeting-api's GET /meetings/{id} also returns rows
+        surfaced via a transcript-share / workspace membership (``shared: true``) — a share grants READ of
+        the transcript, never the owner's private copilot feed or its processing controls — so a shared
+        row is refused here exactly like a foreign one (fail closed)."""
+        row = _meeting_owner_lookup(subject, meeting_id)
+        if not isinstance(row, dict) or row.get("shared") is True:
+            return None
+        owner = row.get("user_id")
+        if owner is not None and str(owner) != str(subject):
+            return None
+        return row
     # The ambient schedule digest's rows source (context bundle): TTL-cached meeting-api fetch;
     # injectable for L2 tests, same seam style as meeting_owner_lookup.
     _schedule_source = schedule_source or schedule_digest_mod.digest_source(
@@ -1025,6 +1065,15 @@ def create_app(
         ``make_dispatch`` like every other trigger. ``meeting_id == session_uid == native_id`` so the
         transcript wire (``tc:meeting:{id}``), the dispatch (``agent-meet-{id}``), and the terminal all
         key on the same id. The bridge feeds ``tc:meeting:{native_id}``; the worker tails it."""
+        subject = subject_of(request)
+        # OBJECT-LEVEL authz (cross-tenant fix): since P0 the collector writes the live transcript to
+        # ``tc:meeting:{ROW id}``, so a NUMERIC ``native_id`` addresses a real meeting row's carrier. Without
+        # this check any caller could aim their OWN copilot at another tenant's row id and have it tail +
+        # summarize that tenant's transcript into the caller's workspace. Numeric ids must be a row the
+        # caller owns (404 otherwise); a true native code (``abc-defg-hij``) is never written by the
+        # collector, so it cannot reach anyone else's feed.
+        if str(body.native_id).isdigit() and _owned_meeting(subject, body.native_id) is None:
+            raise HTTPException(status_code=404, detail="meeting not found")
         meeting_ctx = {
             "meeting_id": body.native_id, "session_uid": body.native_id, "platform": body.platform,
         }
@@ -1032,7 +1081,7 @@ def create_app(
         if transcript_start_id:
             meeting_ctx["transcript_start_id"] = transcript_start_id
         inv = units.make_dispatch(
-            subject=subject_of(request), trigger="transcription",
+            subject=subject, trigger="transcription",
             start=units.entrypoint(inline=_MEETING_BRIEF),
             context={"kind": "meeting", "meeting": meeting_ctx},
         )
@@ -1130,6 +1179,9 @@ def create_app(
         later re-enable gap-fills from exactly where we left off."""
         import redis as _redis
 
+        # Identity FIRST (P20) — both ON and OFF mutate per-meeting processing state, so neither may run
+        # for an unauthenticated caller (OFF used to return before any identity check).
+        subject = subject_of(request)
         r = _redis.from_url(redis_url, decode_responses=True)
         # P0 (cross-tenant leak fix): the copilot's opt-in flag / cursor / processed stream ALL key on
         # the meetings-domain ROW id — the native id is NOT unique (it collides across tenants + a user's
@@ -1148,6 +1200,13 @@ def create_app(
             or (str(live_entry["numeric_meeting_id"])
                 if live_entry and live_entry.get("numeric_meeting_id") else None)
         )
+        # OBJECT-LEVEL authz: the row id keys the flag the watcher arms the copilot from (as the meeting's
+        # owner), so a caller may only toggle processing on a row they OWN — otherwise any user could arm
+        # (cost + unwanted processing) or disarm another tenant's copilot by guessing a sequential row id.
+        # Someone else's (or a merely shared) row → 404. The native-only bootstrap key stays as-is: the
+        # watcher keys on the ROW id, so a native-keyed flag never arms a numeric meeting row.
+        if row_id is not None and _owned_meeting(subject, row_id) is None:
+            raise HTTPException(status_code=404, detail="meeting not found")
         key = row_id or body.native_id
         # The opt-in flag has its OWN key suffix — it must NOT collide with the processed-notes STREAM
         # ``proc:meeting:{key}`` the worker XADDs (worker.py), else a GET on the flag hits a stream →
@@ -1160,7 +1219,6 @@ def create_app(
             except Exception:  # noqa: BLE001 — best-effort; the watcher reaps the copilot on TTL anyway
                 pass
             return {"native_id": body.native_id, "meeting_id": row_id, "processing": False}
-        subject_of(request)  # identity gate (P20) — kept even though nothing dispatches from here
         cursor: str | None = None
         try:
             # TTL'd desired state (P21/P22 — verified on the eyeball: NO session_end frame ever
@@ -1203,6 +1261,9 @@ def create_app(
             schedule_rows=lambda: _schedule_source(subject),
             workspace_mounts=lambda: (active_workspaces(wsr.root, subject)
                                       + shared_active_mounts(wsr.root, subject, mindex.list(subject))),
+            # meeting-api GET /meetings/{id} is caller-scoped (owner OR share/membership grant) → a
+            # foreign row is None → its transcript is not folded into this caller's prompt.
+            meeting_readable=lambda mid: _meeting_owner_lookup(subject, mid) is not None,
         )
         # Mark the grounding→user boundary so the terminal strips ALL folded context in one cut. Every
         # branch returns `<grounding> + body.prompt`, so the user's words are the exact suffix; insert the
@@ -1427,11 +1488,15 @@ def create_app(
                 return Path(m.path)
         raise HTTPException(status_code=403, detail="not authorized for this workspace")
 
-    def _manage_dir(subject: str, slug: Optional[str]) -> Path:
+    def _manage_dir(subject: str, slug: Optional[str], *, min_role: Optional[str] = None) -> Path:
         """Resolve a workspace dir for a MANAGEMENT op (git sync, purpose) — unlike ``_read_target`` this
         also reaches the caller's PARKED slots (a workspace need not be mounted to manage it). Own slots
         first (active or parked); a slug that isn't one of them but IS a shared workspace the caller belongs
-        to resolves to the shared dir. Neither path can ever reach another user's private workspace."""
+        to resolves to the shared dir. Neither path can ever reach another user's private workspace.
+
+        ``min_role`` gates the SHARED branch for state-changing ops (purpose write, push, pull, publish): a
+        ``viewer`` is read-only (the same write gate ``shared_active_mounts`` applies to mounts), so a member
+        below ``min_role`` → 403; a non-member → 404 (someone else's workspace, no existence oracle)."""
         try:
             return workspace_dir_for(wsr.root, subject, slug)
         except ValueError:
@@ -1440,6 +1505,11 @@ def create_app(
             pass
         target = (slug or "").strip()
         if target and membership_mod.is_member(wsr.root, target, subject) is not None:
+            if min_role is not None:
+                try:
+                    membership_mod.require_role(wsr.root, target, subject, min_role)
+                except MembershipError as exc:
+                    raise _member_error(exc)
             return membership_mod._ws_dir(wsr.root, target)
         raise HTTPException(status_code=404, detail="workspace not found")
 
@@ -1679,7 +1749,7 @@ def create_app(
                 org=body.org or None, remote_url=body.remote_url or None,
                 # slug → any workspace the caller can manage (own parked slot or shared membership,
                 # resolved + permission-checked by _manage_dir); omitted keeps the legacy seed target.
-                ws_dir=_manage_dir(subject, body.slug) if body.slug else None,
+                ws_dir=_manage_dir(subject, body.slug, min_role="contributor") if body.slug else None,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc) or "invalid subject")
@@ -1745,7 +1815,7 @@ def create_app(
         for published vexa-born), fast-forward only — NEVER a force push. The token authenticates the push
         and is never stored; a diverged remote fails loud (pull first). Every error is token-redacted (P15)."""
         subject = subject_of(request)
-        ws = _manage_dir(subject, body.slug)
+        ws = _manage_dir(subject, body.slug, min_role="contributor")  # push mutates the shared home
         token = (body.token or "").strip() or git_creds.read_github_token(wsr.root, subject)
         if not token:
             raise HTTPException(status_code=400, detail="a GitHub token is required — pass one or save a reusable token")
@@ -1763,7 +1833,7 @@ def create_app(
         lacks) is refused — no merge/rebase/force — so it is resolved deliberately. The token (optional for
         public repos) is used for the fetch only and never stored (P15)."""
         subject = subject_of(request)
-        ws = _manage_dir(subject, body.slug)
+        ws = _manage_dir(subject, body.slug, min_role="contributor")  # pull rewrites the shared tree
         token = (body.token or "").strip() or git_creds.read_github_token(wsr.root, subject)  # None ⇒ public-repo fetch
         try:
             r = pull_origin(ws, token=token)
@@ -1787,7 +1857,7 @@ def create_app(
         """Set (or clear) a workspace's PURPOSE — stored in the workspace + committed so it travels when
         shared and feeds the mount preamble. Returns the normalized purpose actually stored."""
         subject = subject_of(request)
-        ws = _manage_dir(subject, body.slug)
+        ws = _manage_dir(subject, body.slug, min_role="contributor")  # a viewer is read-only
         return {"purpose": write_purpose(ws, body.purpose)}
 
     @app.get("/api/meeting/stream")
@@ -1816,7 +1886,7 @@ def create_app(
         # OWNER-ONLY for now (matches the WS path today); a shared-workspace membership grant would extend
         # `_meeting_owner_lookup` — the clean seam — but is intentionally NOT honored here yet.
         subject = subject_of(request)  # 401 if no (gateway-injected) identity — fail closed
-        owned = _meeting_owner_lookup(subject, meeting_id)
+        owned = _owned_meeting(subject, meeting_id)
         if owned is None:
             # Absent row, or a row owned by a DIFFERENT tenant → refuse (404-equivalent, no stream opened).
             raise HTTPException(status_code=403, detail="not authorized for this meeting")

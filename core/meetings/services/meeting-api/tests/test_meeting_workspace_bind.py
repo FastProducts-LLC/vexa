@@ -24,7 +24,8 @@ def _client():
 
 def test_bind_is_owner_scoped():
     client, _ = _client()
-    ok = client.post(f"/meetings/{PLAT}/{NID}/workspace", json={"workspace_id": "team-notes"}, headers={"x-user-id": str(OWNER)})
+    ok = client.post(f"/meetings/{PLAT}/{NID}/workspace", json={"workspace_id": "team-notes"},
+                     headers={"x-user-id": str(OWNER), "x-user-workspaces": "team-notes"})
     assert ok.status_code == 200 and ok.json()["workspace_id"] == "team-notes"
     # a non-owner cannot bind (their own row doesn't exist → 404)
     nope = client.post(f"/meetings/{PLAT}/{NID}/workspace", json={"workspace_id": "team-notes"}, headers={"x-user-id": str(STRANGER)})
@@ -42,7 +43,8 @@ def _authz(client, uid, workspaces=None):
 
 def test_member_of_bound_workspace_may_subscribe():
     client, mid = _client()
-    client.post(f"/meetings/{PLAT}/{NID}/workspace", json={"workspace_id": "team-notes"}, headers={"x-user-id": str(OWNER)})
+    client.post(f"/meetings/{PLAT}/{NID}/workspace", json={"workspace_id": "team-notes"},
+                     headers={"x-user-id": str(OWNER), "x-user-workspaces": "team-notes"})
 
     # owner: authorized (branch a, unchanged)
     assert _authz(client, OWNER)["authorized"], "owner must always subscribe"

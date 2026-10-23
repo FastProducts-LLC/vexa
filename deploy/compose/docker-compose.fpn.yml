@@ -14,8 +14,9 @@
 #     over hosted STT providers — Deepgram (default) or Groq (deploy/fpn/stt-hosted). The overlay
 #     defaults TRANSCRIPTION_SERVICE_URL/TOKEN to it, so the separate deploy/transcription
 #     CPU/GPU unit is no longer needed; setting TRANSCRIPTION_SERVICE_URL in .env still wins.
-#   * gateway + meeting-api are ALSO attached to the external `fpn_backend` network (aliases
-#     vexa-gateway / vexa-meeting-api) so the taims stack reaches them without published ports.
+#   * gateway is ALSO attached to the external `fpn_backend` network (alias vexa-gateway) so the
+#     taims stack reaches it without published ports. meeting-api is deliberately NOT: it trusts
+#     gateway-injected identity headers, so only the gateway may reach it (see its service block).
 #   * terminal / mcp / agent-api are disabled (profiles: ["disabled"]) — nothing in the retained
 #     set depends on them (terminal was agent-api's only dependent).
 #   * Every retained service gets mem_limit + pids_limit and bounded json-file logging.
@@ -91,10 +92,12 @@ services:
     mem_limit: 512m
     pids_limit: 256
     logging: *fpn-logging
-    networks:
-      vexa: {}
-      fpn_backend:
-        aliases: [vexa-meeting-api]
+    # NOT on fpn_backend (trust boundary): meeting-api trusts the gateway-injected X-User-Id /
+    # X-User-Workspaces headers and serves the unauthenticated bot/runtime callbacks
+    # (/bots/internal/callback/lifecycle, /runtime/callback). On the shared fpn_backend network any
+    # co-hosted app could forge X-User-Id and read/stop/speak into ANY tenant's meetings. External
+    # consumers (taims) go through vexa-gateway with an X-API-Key; meeting-api stays on the base
+    # compose's internal `vexa` network only.
 
   gateway:
     image: ghcr.io/fastproducts-llc/vexa-gateway:${FPN_VEXA_SHA:-latest}

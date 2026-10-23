@@ -95,6 +95,24 @@ def _resolve_user_id(x_user_id: Optional[str]) -> int:
         raise HTTPException(status_code=401, detail="Invalid user identity")
 
 
+def _member_workspaces(x_user_workspaces: Optional[str]) -> set[str]:
+    """The gateway-injected (never client-declared) shared-workspace membership set (comma-separated)."""
+    return {w.strip() for w in (x_user_workspaces or "").split(",") if w.strip()}
+
+
+def _require_member_workspace(workspace_id: Optional[str], x_user_workspaces: Optional[str]) -> None:
+    """A meeting may only be BOUND to a shared workspace the caller is a member of. The bind IS the read
+    grant for that workspace's members (authorize_subscribe / list_meetings branch b), so an unchecked id
+    lets a caller push their meeting into ANOTHER tenant's workspace. A workspace outside the caller's
+    membership set is someone else's object → 404 (no existence oracle). ``None``/empty = unbind (allowed)."""
+    if workspace_id and workspace_id not in _member_workspaces(x_user_workspaces):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+
+# Transcript share modes the grant validator understands; anything else would silently behave as `open`.
+_SHARE_MODES = frozenset({"open", "restricted"})
+
+
 def build_router(
     store: TranscriptStore,
     redis: RedisBus,
@@ -127,7 +145,7 @@ def build_router(
         x_user_workspaces: Optional[str] = Header(default=None),
     ):
         user_id = _resolve_user_id(x_user_id)
-        member_workspaces = {w.strip() for w in (x_user_workspaces or "").split(",") if w.strip()}
+        member_workspaces = _member_workspaces(x_user_workspaces)
         doc = await store.get_transcript_by_id(user_id, meeting_id, member_workspaces)
         if doc is None:
             log_event(
@@ -188,7 +206,7 @@ def build_router(
         platform: Optional[str] = Query(default=None),
     ):
         user_id = _resolve_user_id(x_user_id)
-        member_workspaces = {w.strip() for w in (x_user_workspaces or "").split(",") if w.strip()}
+        member_workspaces = _member_workspaces(x_user_workspaces)
         meetings = await store.list_meetings(
             user_id, status=status, platform=platform, limit=limit, offset=offset,
             member_workspaces=member_workspaces,
@@ -291,6 +309,7 @@ def build_router(
     async def create_planned_meeting(
         request: Request,
         x_user_id: Optional[str] = Header(default=None),
+        x_user_workspaces: Optional[str] = Header(default=None),
     ):
         user_id = _resolve_user_id(x_user_id)
         try:
@@ -324,6 +343,7 @@ def build_router(
         if workspace_id is not None and not isinstance(workspace_id, str):
             raise HTTPException(status_code=422, detail="'workspace_id' must be a string")
         workspace_id = (workspace_id or "").strip() or None
+        _require_member_workspace(workspace_id, x_user_workspaces)
 
         auto_join = payload.get("auto_join", True)
         if not isinstance(auto_join, bool):
@@ -360,6 +380,7 @@ def build_router(
         meeting_id: int,
         request: Request,
         x_user_id: Optional[str] = Header(default=None),
+        x_user_workspaces: Optional[str] = Header(default=None),
     ):
         user_id = _resolve_user_id(x_user_id)
         try:
@@ -400,6 +421,7 @@ def build_router(
             if workspace_id is not None and not isinstance(workspace_id, str):
                 raise HTTPException(status_code=422, detail="'workspace_id' must be a string")
             updates["workspace_id"] = (workspace_id or "").strip() or None
+            _require_member_workspace(updates["workspace_id"], x_user_workspaces)
         if "auto_join" in payload:
             if not isinstance(payload["auto_join"], bool):
                 raise HTTPException(status_code=422, detail="'auto_join' must be a boolean")
@@ -462,6 +484,7 @@ def build_router(
         native_meeting_id: str,
         request: Request,
         x_user_id: Optional[str] = Header(default=None),
+        x_user_workspaces: Optional[str] = Header(default=None),
     ):
         user_id = _resolve_user_id(x_user_id)
         try:
@@ -471,6 +494,7 @@ def build_router(
         workspace_id = str(payload.get("workspace_id", "")).strip() if isinstance(payload, dict) else ""
         if not workspace_id:
             raise HTTPException(status_code=422, detail="'workspace_id' is required")
+        _require_member_workspace(workspace_id, x_user_workspaces)
         bound = await store.bind_workspace(user_id, platform, native_meeting_id, workspace_id)
         if bound is None:
             raise HTTPException(
@@ -502,6 +526,9 @@ def build_router(
         if not isinstance(payload, dict):
             payload = {}
         mode = str(payload.get("mode", "open")).strip() or "open"
+        if mode not in _SHARE_MODES:
+            # An unknown mode would fall through validate_transcript_grant as an OPEN link — fail closed.
+            raise HTTPException(status_code=422, detail="'mode' must be one of: open, restricted")
         emails = payload.get("allowed_emails") or []
         ttl = int(payload.get("expires_in_sec", 86400) or 86400)
         minted = await store.mint_transcript_share(
@@ -695,7 +722,7 @@ def build_router(
         user_id = _resolve_user_id(x_user_id)
         # Lane A: the gateway-injected set of shared workspaces the caller is a member of — authorizes a
         # subscribe to any meeting BOUND to one of them (not just meetings they own). Comma-separated ids.
-        member_workspaces = {w.strip() for w in (x_user_workspaces or "").split(",") if w.strip()}
+        member_workspaces = _member_workspaces(x_user_workspaces)
         try:
             payload = await request.json()
         except Exception:
