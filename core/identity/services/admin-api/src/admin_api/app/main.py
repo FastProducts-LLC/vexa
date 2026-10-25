@@ -444,8 +444,6 @@ def create_app() -> FastAPI:
                                      user: User = Depends(get_current_user),
                                      db: AsyncSession = Depends(get_db)):
         """Set the caller's transcription backend override. ``token`` is a SECRET — masked on read."""
-        from fastapi import HTTPException
-        raise HTTPException(status_code=403, detail="User transcription URL overrides are disabled.")
         await _put_user_prefs(update.model_dump(exclude_unset=True), "transcription_prefs", user, db)
         return await get_user_transcription(user)
 
