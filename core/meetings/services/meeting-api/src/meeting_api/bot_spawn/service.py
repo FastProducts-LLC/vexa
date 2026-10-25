@@ -243,12 +243,8 @@ async def request_bot(
     # from the invocation when unset (transcribe still gated by transcribe_enabled).
     transcription_service_url = os.getenv("TRANSCRIPTION_SERVICE_URL") or None
     transcription_service_token = os.getenv("TRANSCRIPTION_SERVICE_TOKEN") or None
-    configured = await _resolve_transcription_backend(user_id)
-    if configured.get("url"):
-        transcription_service_url = configured["url"]
-        # A configured backend's token replaces the env token even when empty — the env token
-        # belongs to the ENV backend, never to a user-supplied endpoint.
-        transcription_service_token = configured.get("token") or None
+    # User transcription URL overrides are disabled until the bot decoder is fixed.
+    # Preserve the operator-configured internal transcription destination.
     # Token must outlive the bot's max active time (default 4h, see bot deriveMaxActiveMs) or
     # transcription dies mid-meeting when the JWT expires. Default 5h; override per deployment.
     token_ttl_seconds = int(os.getenv("MEETING_TOKEN_TTL_SECONDS") or 18000)

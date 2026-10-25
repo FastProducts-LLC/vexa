@@ -25,12 +25,13 @@ COPY core/agent/pyproject.toml core/agent/uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-default-groups
 
-# Claude Code (the unit's model+tooling runtime) + git (the governance git ops). node 20 via nodesource
+# Claude Code (the unit's model+tooling runtime) + git (the governance git ops). node 22.23.4 (pinned) via nodesource — CVE-2026-111497
 # so claude-code resolves; the subscription credentials are bind-mounted read-only at runtime (P15).
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl gnupg && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs=22.23.4-1nodesource1 && \
     npm install -g @anthropic-ai/claude-code && \
+    test "$(node -p 'process.versions.node')" = "22.23.4" && \
     apt-get purge -y curl gnupg && apt-get autoremove -y && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # The worker's own packages (NO control_plane): worker + llm + shared + contracts, copied to /app so
