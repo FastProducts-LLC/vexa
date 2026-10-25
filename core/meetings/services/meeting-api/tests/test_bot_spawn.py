@@ -166,20 +166,19 @@ def test_post_bots_401_without_identity(monkeypatch):
     assert r.status_code == 401
 
 
-# ── Settings → transcription backend: the configured STT (user pref > platform) beats the env ────
+# ── Settings → transcription backend: IGNORED while the bot image runs a vulnerable Node (CVE-2026-111497) ────
 
-async def test_request_bot_configured_transcription_backend_overrides_env(monkeypatch):
-    """A backend configured in Settings (resolved by admin-api's bot-context: user pref >
-    platform setting) rides the invocation INSTEAD of the process env — including the token:
-    the env token belongs to the ENV backend, never to a user-supplied endpoint."""
+async def test_request_bot_ignores_configured_transcription_backend_until_bot_node_fixed(monkeypatch):
+    """request_bot ignores the Settings/user-resolved backend (see bot_spawn/service.py comment)
+    and always uses the operator env backend: the bot's Node fetch retrieves the per-user URL
+    and auto-decodes br. The resolver stays monkeypatched to prove it is not consulted."""
     from meeting_api.bot_spawn import service as spawn_service
 
     monkeypatch.setenv("TRANSCRIPTION_SERVICE_URL", "https://stt-env.vexa.ai")
     monkeypatch.setenv("TRANSCRIPTION_SERVICE_TOKEN", "tok-env")
 
     async def fake_resolve(user_id):
-        assert user_id == USER
-        return {"url": "https://stt-mine.example.com"}
+        raise AssertionError("resolver must not be consulted")
 
     monkeypatch.setattr(spawn_service, "_resolve_transcription_backend", fake_resolve)
     repo = InMemoryMeetingRepo()
@@ -188,8 +187,8 @@ async def test_request_bot_configured_transcription_backend_overrides_env(monkey
                       native_meeting_id="abc-defg-hij", redis_url="redis://redis:6379/0",
                       token_secret=SECRET)
     inv = json.loads(runtime.specs[0]["env"]["BOT_CONFIG"])
-    assert inv["transcriptionServiceUrl"] == "https://stt-mine.example.com"
-    assert "transcriptionServiceToken" not in inv  # env token does NOT leak to the custom backend
+    assert inv["transcriptionServiceUrl"] == "https://stt-env.vexa.ai"
+    assert inv["transcriptionServiceToken"] == "tok-env"
 
 
 async def test_request_bot_env_transcription_stays_without_settings(monkeypatch):
