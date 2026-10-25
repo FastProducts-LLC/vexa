@@ -156,14 +156,37 @@ def test_client_supplied_marker_and_internal_secret_are_stripped():
     """A client cannot smuggle its own marker / internal secret through the gateway."""
     client, downstream = _secret_client()
     client.get("/meetings", headers={**AUTH, "x-gateway-verified": "forged", "x-internal-secret": "forged"})
-    assert "x-gateway-verified" not in downstream.last["headers"]
+    # the forged marker is replaced by the gateway's own (meeting-api forwards are stamped too)
+    assert downstream.last["headers"]["x-gateway-verified"] == "gw-secret"
     assert "x-internal-secret" not in downstream.last["headers"]
 
 
-def test_meeting_forward_never_carries_the_secret():
+def test_meeting_forward_stamps_gateway_verified_marker():
+    """meeting-api enforces the SAME marker on every x-user-* request (meeting_api/internal_auth.py)."""
     client, downstream = _secret_client()
     client.get("/meetings", headers=AUTH)
     assert downstream.last["url"].startswith("http://meeting-api")
+    assert downstream.last["headers"]["x-gateway-verified"] == "gw-secret"
+    assert downstream.last["headers"]["x-user-id"] == "7"
+
+
+def test_admin_forward_never_carries_the_marker():
+    """admin-api authenticates the X-API-Key itself — the secret is not sent there."""
+    downstream = FakeDownstream(status_code=200, body={"ok": True})
+    app = create_app(FakeAuthorizer(), downstream, FakeRedis(), agent_api_url="http://agent-api",
+                     meeting_api_url="http://meeting-api", admin_api_url="http://admin-api",
+                     internal_api_secret="gw-secret")
+    client = TestClient(app)
+    client.get("/user/webhook", headers={**AUTH, "x-gateway-verified": "forged"})
+    assert downstream.last["url"].startswith("http://admin-api")
+    assert "x-gateway-verified" not in downstream.last["headers"]
+
+
+def test_no_secret_configured_means_no_marker():
+    downstream = FakeDownstream(status_code=200, body={"ok": True})
+    app = create_app(FakeAuthorizer(), downstream, FakeRedis(), meeting_api_url="http://meeting-api",
+                     internal_api_secret="")
+    TestClient(app).get("/meetings", headers={**AUTH, "x-gateway-verified": "forged"})
     assert "x-gateway-verified" not in downstream.last["headers"]
 
 
@@ -171,3 +194,34 @@ def test_keyless_agent_call_never_gets_marker():
     client, downstream = _secret_client()
     assert client.get("/agent/sessions", headers={"x-gateway-verified": "gw-secret"}).status_code == 401
     assert downstream.last is None
+
+
+async def test_ws_authorize_hop_stamps_marker(monkeypatch):
+    """The /ws subscribe-authorization hop also carries x-user-id to meeting-api → it must carry the
+    gateway marker too, or meeting-api (fail-closed) refuses every subscribe."""
+    from gateway.adapters import AdminApiAuthorizer
+
+    class _Resp:
+        def __init__(self, code, body):
+            self.status_code, self._body = code, body
+
+        def json(self):
+            return self._body
+
+    class _Client:
+        def __init__(self):
+            self.calls = []
+
+        async def post(self, url, json=None, headers=None, timeout=None):
+            self.calls.append({"url": url, "headers": dict(headers or {})})
+            if url.endswith("/internal/validate"):
+                return _Resp(200, {"user_id": 7, "scopes": ["bot"], "max_concurrent": 3})
+            return _Resp(200, {"authorized": [], "errors": []})
+
+    monkeypatch.setenv("INTERNAL_API_SECRET", "gw-secret")
+    c = _Client()
+    await AdminApiAuthorizer(c, "http://admin-api", "http://meeting-api").authorize_subscribe("k", [])
+    hop = c.calls[-1]
+    assert hop["url"] == "http://meeting-api/ws/authorize-subscribe"
+    assert hop["headers"]["x-gateway-verified"] == "gw-secret"
+    assert hop["headers"]["x-user-id"] == "7"

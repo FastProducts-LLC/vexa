@@ -224,13 +224,14 @@ def create_app(
 
     # --- the REST proxy: faithful carve of main.forward_request for client (non-admin) routes.
     # agent-api honors X-User-Id only alongside X-Gateway-Verified == the internal-tier secret, so a
-    # direct (non-gateway) caller on the compose network cannot pose as a user. Stamped ONLY on agent
-    # forwards (meeting-api never sees the secret through this path).
+    # direct (non-gateway) caller on the compose network cannot pose as a user. meeting-api enforces the
+    # SAME marker on every x-user-* request (meeting_api/internal_auth.py), so it is stamped on agent AND
+    # meeting-api forwards — never on admin-api forwards (admin-api authenticates the X-API-Key itself).
     _gateway_secret = internal_api_secret if internal_api_secret is not None else os.getenv(
         "INTERNAL_API_SECRET", "")
 
     def _stamp_agent(url: str, headers: dict) -> dict:
-        if _gateway_secret and url.startswith(f"{agent_api_url}/"):
+        if _gateway_secret and (url.startswith(f"{agent_api_url}/") or url.startswith(f"{meeting_api_url}/")):
             headers["x-gateway-verified"] = _gateway_secret
         return headers
 

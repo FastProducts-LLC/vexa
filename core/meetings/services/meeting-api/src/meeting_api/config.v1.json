@@ -73,7 +73,16 @@
    "class": "defaulted",
    "default": "(unset — the internal lifecycle-callback header is then not attached)",
    "secret": true,
-   "description": "shared secret for internal service-to-service calls (x-internal-secret on the self-driven lifecycle callback)"
+   "description": "shared secret for internal service-to-service calls (x-internal-secret on the self-driven lifecycle callback) AND the gateway trust edge: any request carrying x-user-* identity headers must present X-Gateway-Verified equal to it (unset -> such requests 503 unless DEV_MODE=true)"
+  },
+  {
+   "key": "DEV_MODE",
+   "class": "defaulted",
+   "default": "false",
+   "description": "local-development escape hatch: when true the boot preflight tolerates the stock placeholder secrets (ADMIN_TOKEN=changeme, INTERNAL_API_SECRET=vexa-internal-secret, DB_PASSWORD=postgres, MINIO_SECRET_KEY=vexa-secret-key) and an unset INTERNAL_API_SECRET leaves the gateway trust edge open; the dev compose defaults it true, production must leave it false",
+   "targets": [
+    "compose"
+   ]
   },
   {
    "key": "TRANSCRIPTION_SERVICE_URL",
