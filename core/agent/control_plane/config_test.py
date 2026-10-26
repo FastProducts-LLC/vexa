@@ -135,10 +135,12 @@ def run_models_test(config: dict, env: Optional[dict] = None,
     cfg_base_url = (config.get("base_url") or "").strip()
     cfg_api_key = (config.get("api_key") or "").strip()
     model = (config.get("model") or "").strip()
-    if mode == "custom" and cfg_base_url:
-        # C1: a Settings-supplied endpoint is tested ONLY with the Settings-supplied key. The
-        # deployment's ANTHROPIC_* must never be posted to a host a user typed in — exactly the
-        # pairing rule the dispatch overlay enforces, so what is tested is what a turn gets.
+    subject_supplied = (config.get("endpoint_source") or "user") != "platform"
+    if mode == "custom" and cfg_base_url and subject_supplied:
+        # C1: a USER-supplied endpoint is tested ONLY with the user-supplied key. The deployment's
+        # ANTHROPIC_* must never be posted to a host a user typed in — exactly the pairing rule
+        # the dispatch overlay enforces, so what is tested is what a turn gets. (An operator-set
+        # platform endpoint falls through to the pre-C1 branch: operator gateway, operator key.)
         problem = endpoint_host_problem(
             cfg_base_url, allowlist=parse_allowlist(env.get(ALLOWLIST_ENV, "")),
             allow_private=allow_private_from_env(env.get(ALLOW_PRIVATE_ENV)))
@@ -152,13 +154,13 @@ def run_models_test(config: dict, env: Optional[dict] = None,
         else:
             out = test_custom_endpoint(cfg_base_url, cfg_api_key, model, post=post)
         out["mode"] = "custom"
-    elif mode == "custom" or (not mode and env.get("ANTHROPIC_BASE_URL", "")
-                              and (env.get("ANTHROPIC_AUTH_TOKEN", "")
+    elif mode == "custom" or (not mode and (cfg_base_url or env.get("ANTHROPIC_BASE_URL", ""))
+                              and (cfg_api_key or env.get("ANTHROPIC_AUTH_TOKEN", "")
                                    or env.get("ANTHROPIC_API_KEY", ""))):
-        # custom without an endpoint is inert (dispatch stamps nothing) — the deployment's own
-        # endpoint + key pair is what a turn uses, so that pair is what gets tested.
-        base_url = env.get("ANTHROPIC_BASE_URL", "")
-        api_key = env.get("ANTHROPIC_AUTH_TOKEN", "") or env.get("ANTHROPIC_API_KEY", "")
+        # Operator-chosen endpoint (platform tier), or custom without an endpoint (inert — the
+        # deployment's own pair is what a turn uses): the operator's env may complete the pair.
+        base_url = cfg_base_url or env.get("ANTHROPIC_BASE_URL", "")
+        api_key = cfg_api_key or env.get("ANTHROPIC_AUTH_TOKEN", "") or env.get("ANTHROPIC_API_KEY", "")
         out = test_custom_endpoint(base_url, api_key, model, post=post)
         out["mode"] = "custom"
     else:
