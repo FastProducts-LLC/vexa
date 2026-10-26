@@ -50,7 +50,8 @@
 #   RUNTIME_API_TOKEN            runtime control-plane bearer, shared by runtime + meeting-api
 #                                (security finding C5; `openssl rand -hex 32`; not "vexa-runtime-dev-token")
 #
-# The external network must exist first: docker network create fpn_backend
+# The external networks must exist first: docker network create fpn_backend
+#                                          docker network create fpn_vexa_api
 
 # ${VAR:?} = no fail-open default: an unset/empty value aborts `docker compose up` (the stock file's
 # `${VAR:-placeholder}` defaults are public values). meeting-api's DEV_MODE is pinned off so its boot
@@ -158,6 +159,8 @@ services:
       vexa: {}
       fpn_backend:
         aliases: [vexa-gateway]
+      vexa_api:
+        aliases: [vexa-gateway]
 
   tts-cartesia:
     image: ghcr.io/fastproducts-llc/vexa-tts-cartesia:${FPN_VEXA_SHA:-latest}
@@ -242,3 +245,7 @@ services:
 networks:
   fpn_backend:
     external: true
+  # fpn_vexa_api (2026-10-26): dedicated network for apps that call the gateway (taims); replaces the flat fpn_backend bridge
+  vexa_api:
+    external: true
+    name: fpn_vexa_api
