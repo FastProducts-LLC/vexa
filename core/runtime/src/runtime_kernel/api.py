@@ -8,9 +8,12 @@ O-RT-2 additions:
     the old fire-once POST. A receiver that 500s is retried on the next sweep until it acks."""
 from __future__ import annotations
 
+import hmac
+import logging
+import os
 from typing import Callable, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -22,6 +25,34 @@ from .scheduler import Scheduler
 
 # A health probe returns True when its dependency is reachable. Probes must never raise.
 HealthCheck = Callable[[], bool]
+
+logger = logging.getLogger("runtime_kernel.api")
+
+# ── control-plane auth (security finding C5) ────────────────────────────────────────────────────
+# The runtime holds the host Docker socket, so its API is a host-root primitive: anything that can
+# POST /workloads or /schedule can spawn containers / fire arbitrary HTTP from inside the stack.
+# Every route except /health requires ``Authorization: Bearer $RUNTIME_API_TOKEN`` (constant-time
+# compare). FAIL CLOSED: with no token configured every protected route answers 503 — the runtime
+# never serves an open control plane by accident. ``RUNTIME_API_INSECURE_NO_AUTH=1`` is the explicit,
+# loudly-logged opt-out for unit tests / throwaway local stacks only.
+TOKEN_ENV = "RUNTIME_API_TOKEN"
+INSECURE_ENV = "RUNTIME_API_INSECURE_NO_AUTH"
+OPEN_PATHS = frozenset({"/health"})
+_UNSET = object()
+
+
+def _resolve_token(api_token) -> tuple[Optional[str], bool]:
+    """(token, insecure_opt_out). An explicit ``api_token`` argument wins over the env."""
+    token = os.getenv(TOKEN_ENV, "") if api_token is _UNSET else (api_token or "")
+    token = token.strip()
+    insecure = os.getenv(INSECURE_ENV, "").strip().lower() in ("1", "true", "yes")
+    return (token or None), (insecure and not token)
+
+
+def _bearer(request: Request) -> str:
+    raw = request.headers.get("authorization", "")
+    scheme, _, value = raw.partition(" ")
+    return value.strip() if scheme.lower() == "bearer" else ""
 
 
 class StopBody(BaseModel):
@@ -60,6 +91,7 @@ def create_app(
     callback_queue: Optional[CallbackQueue] = None,
     health_checks: Optional[dict[str, HealthCheck]] = None,
     scheduler: Optional[Scheduler] = None,
+    api_token=_UNSET,
 ) -> FastAPI:
     rt = runtime or Runtime()
     queue = callback_queue or CallbackQueue()
@@ -83,6 +115,31 @@ def create_app(
     app.add_middleware(TraceMiddleware)
     dump = lambda s: s.model_dump(exclude_none=True)
 
+    token, insecure = _resolve_token(api_token)
+    if token is None and not insecure:
+        logger.critical(
+            "%s is not set: the runtime control plane will REJECT every request except /health "
+            "(fail closed). Set the same token in the runtime and in every caller (meeting-api).",
+            TOKEN_ENV,
+        )
+    elif insecure:
+        logger.warning("%s=1: the runtime control plane is UNAUTHENTICATED (tests/local only)", INSECURE_ENV)
+    app.state.auth_mode = "token" if token else ("insecure" if insecure else "unconfigured")
+    expected = token.encode() if token else b""
+
+    @app.middleware("http")
+    async def _require_token(request: Request, call_next):
+        if request.url.path in OPEN_PATHS or insecure:
+            return await call_next(request)
+        if not token:
+            return JSONResponse({"detail": "runtime API token not configured"}, status_code=503)
+        presented = _bearer(request).encode()
+        if not hmac.compare_digest(presented, expected):
+            return JSONResponse(
+                {"detail": "unauthorized"}, status_code=401, headers={"WWW-Authenticate": "Bearer"},
+            )
+        return await call_next(request)
+
     @app.get("/health")
     def health():
         results = {}
@@ -104,6 +161,21 @@ def create_app(
 
     @app.post("/workloads", status_code=201)
     def create(spec: WorkloadSpec):
+        # Reject a spec whose env would make the substrate bind a host path / foreign volume / the
+        # docker socket (C5) — BEFORE anything is persisted or spawned. Backend-specific.
+        validate_env = getattr(rt.backend, "validate_env", None)
+        if validate_env is not None:
+            try:
+                validate_env(spec.env)
+            except ValueError as e:
+                log_event(
+                    "workload_spec_rejected",
+                    audience="system",
+                    level="warning",
+                    span="workloads.create",
+                    fields={"workload_id": spec.workloadId, "profile": spec.profile, "error": str(e)},
+                )
+                raise HTTPException(status_code=400, detail=str(e))
         try:
             status = rt.create(spec)
             # SYSTEM event: a workload was spawned for the calling control-plane request.

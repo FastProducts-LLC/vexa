@@ -60,6 +60,13 @@
    "description": "the runtime kernel's runtime.v1 surface bot_spawn creates workloads on"
   },
   {
+   "key": "RUNTIME_API_TOKEN",
+   "class": "defaulted",
+   "default": "(unset ⇒ the runtime refuses every spawn; outside DEV_MODE the boot refuses)",
+   "secret": true,
+   "description": "bearer sent on every runtime.v1 call (security finding C5) — must equal the runtime's RUNTIME_API_TOKEN"
+  },
+  {
    "key": "MEETING_API_URL",
    "class": "defaulted",
    "default": "http://meeting-api:8080",

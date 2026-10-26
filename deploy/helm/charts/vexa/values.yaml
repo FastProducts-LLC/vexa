@@ -29,13 +29,14 @@ global:
 
 # ---------- Shared secrets ----------
 # Recommended: override via --set-file / external secret tooling, or point existingSecretName at a
-# Secret carrying these keys: ADMIN_API_TOKEN, INTERNAL_API_SECRET, TRANSCRIPTION_SERVICE_TOKEN,
+# Secret carrying these keys: ADMIN_API_TOKEN, INTERNAL_API_SECRET, RUNTIME_API_TOKEN, TRANSCRIPTION_SERVICE_TOKEN,
 # VEXA_DISPATCH_SIGNING_KEY, VEXA_BOT_API_KEY, ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN,
 # ANTHROPIC_BASE_URL, CLAUDE_CODE_OAUTH_TOKEN.
 secrets:
   existingSecretName: ""
   adminApiToken: "CHANGE_ME"        # admin-api auth + MeetingToken signing (== meeting-api ADMIN_TOKEN)
   internalApiSecret: ""             # gateway↔admin-api↔meeting-api internal calls (default vexa-internal-secret)
+  runtimeApiToken: ""               # runtime control-plane bearer (runtime + meeting-api + agent-api); empty → random, kept across upgrades
   transcriptionServiceToken: ""     # funded STT token threaded into spawned bots
   dispatchSigningKey: ""            # agent-api signs per-dispatch tokens (default dev key; k8s prod → set this)
   botApiKey: ""                     # agent-api → gateway "add bot from URL" key (optional)

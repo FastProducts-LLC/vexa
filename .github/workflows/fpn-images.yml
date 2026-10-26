@@ -1,4 +1,4 @@
-# fpn-images — build + publish the fpn overlay's four images to GHCR on every push to fpn.
+# fpn-images — build + publish the fpn overlay's five images to GHCR on every push to fpn.
 #
 #   ghcr.io/fastproducts-llc/vexa-meeting-api   (context: repo root — the Dockerfile vendors the
 #                                                sealed contracts by path, same as upstream's
@@ -6,6 +6,7 @@
 #   ghcr.io/fastproducts-llc/vexa-gateway       (context: core/gateway/services/gateway)
 #   ghcr.io/fastproducts-llc/vexa-tts-cartesia  (context: deploy/fpn/tts-cartesia)
 #   ghcr.io/fastproducts-llc/vexa-stt-hosted    (context: deploy/fpn/stt-hosted)
+#   ghcr.io/fastproducts-llc/vexa-runtime       (context: core/runtime — C5 control-plane auth)
 #
 # Tags: :<commit sha> (immutable) + :latest (mutable pointer). The fpn compose overlay
 # (deploy/compose/docker-compose.fpn.yml) pins by FPN_VEXA_SHA.
@@ -50,6 +51,11 @@ jobs:
           - name: vexa-stt-hosted
             context: deploy/fpn/stt-hosted
             dockerfile: deploy/fpn/stt-hosted/Dockerfile
+          # C5: the runtime holds the host docker socket; the fork image adds bearer auth on its
+          # control plane + a server-side mount-source allowlist (upstream's image has neither).
+          - name: vexa-runtime
+            context: core/runtime
+            dockerfile: core/runtime/Dockerfile
     steps:
       - uses: actions/checkout@v4
 

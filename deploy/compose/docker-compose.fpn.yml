@@ -4,6 +4,7 @@
 #   docker compose -p vexa-v012 -f docker-compose.yml -f docker-compose.fpn.yml --env-file .env up -d --wait
 #
 # What it changes:
+#   * runtime runs the fork image too (C5: bearer-authenticated control plane + mount allowlist).
 #   * meeting-api + gateway run the FastProducts-LLC/vexa fork images from GHCR (the fpn branch's
 #     acts.v1 speak/config control-plane patch), pinned by FPN_VEXA_SHA (default: latest).
 #   * meeting-api gets TTS_SERVICE_URL / TTS_SERVICE_TOKEN — threaded into voice-agent bot spawns
@@ -46,6 +47,8 @@
 #   DB_PASSWORD                  Postgres password (not "postgres"; an EXISTING volume keeps its old
 #                                password — ALTER ROLE it first, POSTGRES_PASSWORD only applies at initdb)
 #   MINIO_SECRET_KEY             MinIO root password (not "vexa-secret-key")
+#   RUNTIME_API_TOKEN            runtime control-plane bearer, shared by runtime + meeting-api
+#                                (security finding C5; `openssl rand -hex 32`; not "vexa-runtime-dev-token")
 #
 # The external network must exist first: docker network create fpn_backend
 
@@ -55,6 +58,7 @@
 x-fpn-req:
   - &req-db-password DB_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set in deploy/compose/.env}
   - &req-internal-secret INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set in deploy/compose/.env}
+  - &req-runtime-token RUNTIME_API_TOKEN=${RUNTIME_API_TOKEN:?RUNTIME_API_TOKEN must be set in deploy/compose/.env}
 
 x-fpn-logging: &fpn-logging
   driver: json-file
@@ -99,8 +103,16 @@ services:
     logging: *fpn-logging
 
   runtime:
+    # C5: the fork's runtime image (control-plane bearer auth + server-side mount allowlist). The
+    # stock vexaai/v012-runtime image has an UNAUTHENTICATED /workloads + /schedule over the host
+    # docker socket — never run it here.
+    image: ghcr.io/fastproducts-llc/vexa-runtime:${FPN_VEXA_SHA:-latest}
+    pull_policy: missing
     environment:
       - *req-internal-secret
+      - *req-runtime-token
+      # No agent-api in fpn → no workload may declare ANY bind source (bots never mount anything).
+      - RUNTIME_MOUNT_SOURCE_ALLOWLIST=
     mem_limit: 512m
     pids_limit: 256
     logging: *fpn-logging
@@ -113,6 +125,8 @@ services:
       - *req-internal-secret
       - ADMIN_TOKEN=${ADMIN_TOKEN:?ADMIN_TOKEN must be set in deploy/compose/.env}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be set in deploy/compose/.env}
+      # C5: runtime control-plane bearer (== the runtime's RUNTIME_API_TOKEN).
+      - *req-runtime-token
       # Production: the boot preflight rejects stock placeholder secrets (never true in fpn).
       - DEV_MODE=false
       # Threaded by bot_spawn into voice-agent workload env as TTS_SERVICE_URL / TTS_API_TOKEN.

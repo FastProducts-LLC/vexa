@@ -21,6 +21,13 @@
       "description": "the runtime kernel's runtime.v1 surface the dispatcher spawns workers on (+ schedule.v1 for routines)"
     },
     {
+      "key": "VEXA_RUNTIME_API_TOKEN",
+      "class": "defaulted",
+      "default": "(unset ⇒ the runtime refuses every spawn/schedule call)",
+      "secret": true,
+      "description": "bearer sent on every runtime.v1 / schedule.v1 call (security finding C5) — must equal the runtime's RUNTIME_API_TOKEN"
+    },
+    {
       "key": "VEXA_AGENT_PROFILE",
       "class": "defaulted",
       "default": "agent",
