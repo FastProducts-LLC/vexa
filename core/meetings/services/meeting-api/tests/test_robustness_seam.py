@@ -856,8 +856,10 @@ def test_startup_requires_admin_token(monkeypatch):
     msg = str(ei.value)
     assert "ADMIN_TOKEN" in msg, f"the error must name the missing var, got: {msg!r}"
 
-    # And with it set, the config check passes (the happy path the deploy actually runs).
+    # And with it set, the config check passes (the happy path the deploy actually runs). C5: the
+    # runtime bearer is part of that happy path — unset, the boot refuses (see test_default_secrets).
     monkeypatch.setenv("ADMIN_TOKEN", SECRET)
+    monkeypatch.setenv("RUNTIME_API_TOKEN", SECRET)
     entry._require_config()  # must not raise
 
 
