@@ -55,6 +55,16 @@ def _default_subject(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _local_clones(monkeypatch):
+    """The workspace suites clone REAL git over local repos (no network). Production only clones
+    https:// from allowlisted hosts; this flips the module's (non-env) test seam so local paths work.
+    test_workspace_attach_url_policy.py resets it to prove the production policy."""
+    from control_plane import workspace_attach
+
+    monkeypatch.setattr(workspace_attach, "_ALLOW_LOCAL_CLONES", True)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_home(monkeypatch, tmp_path_factory):
     """Point HOME at a per-test temp dir. The claude-code harness rewires ``$HOME/.claude/projects``
     into the workspace (``_link_chat_into_workspace``) — designed for the disposable per-turn

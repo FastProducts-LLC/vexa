@@ -175,6 +175,13 @@
       ]
     },
     {
+      "key": "VEXA_WORKSPACE_GIT_HOSTS",
+      "class": "defaulted",
+      "default": "github.com",
+      "description": "hosts a custom workspace repo may be cloned from (comma-separated exact hostnames; https only, no embedded credentials); the GitHub token is only ever sent to github.com",
+      "targets": []
+    },
+    {
       "key": "VEXA_MODEL_ALLOWLIST",
       "class": "defaulted",
       "default": "(empty \u2014 allow any workspace-pinned model)",

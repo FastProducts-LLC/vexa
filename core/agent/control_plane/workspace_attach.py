@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
 import shutil
@@ -28,6 +29,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import urlsplit
 
 from shared.gitenv import scrubbed_git_env
 from shared.seeding import resolve_seed_dir, seed_workspace, validate_seed
@@ -55,6 +57,66 @@ CloneFn = Callable[[str, str, Path, Optional[str]], None]
 class CloneError(RuntimeError):
     """A clone failed. The message is REDACTED of any access token (P15) so it is safe to surface in an
     API error body / log."""
+
+
+class RepoUrlError(CloneError):
+    """The requested repo URL / ref is not allowed (bad scheme, host off the allowlist, embedded
+    credentials, option-looking value). Raised BEFORE any git process runs (API → 400)."""
+
+
+# A custom workspace repo is user-supplied and cloned SERVER-SIDE, so it is an SSRF / local-file /
+# credential-exfiltration vector unless pinned: https only, to an allowlisted host set. The allowlist
+# is ``VEXA_WORKSPACE_GIT_HOSTS`` (comma-separated exact hostnames; default github.com).
+_DEFAULT_GIT_HOSTS = ("github.com",)
+# The stored/supplied access token is a GitHub token: it is only ever sent to GitHub.
+_GITHUB_TOKEN_HOSTS = frozenset({"github.com"})
+# Test seam (never env-settable): the test suites clone real git over LOCAL repos (no network).
+_ALLOW_LOCAL_CLONES = False
+
+
+def allowed_git_hosts() -> frozenset[str]:
+    raw = os.environ.get("VEXA_WORKSPACE_GIT_HOSTS", "")
+    hosts = {h.strip().lower().rstrip(".") for h in raw.split(",") if h.strip()}
+    return frozenset(hosts or _DEFAULT_GIT_HOSTS)
+
+
+def _is_local_source(repo_url: str) -> bool:
+    return repo_url.startswith("/") or repo_url.startswith("file://")
+
+
+def validate_repo_url(repo_url: str) -> str:
+    """Return the (lower-cased) host of an allowed clone URL, else raise ``RepoUrlError``. Allowed =
+    ``https://<allowlisted-host>[:443]/<path>`` with no userinfo, whitespace/control chars or backslashes,
+    and not option-looking (leading ``-``)."""
+    url = (repo_url or "").strip()
+    if not url:
+        raise RepoUrlError("repository URL is required")
+    if url.startswith("-"):
+        raise RepoUrlError("repository URL must not start with '-'")
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F or ch == "\\" for ch in url):
+        raise RepoUrlError("repository URL contains invalid characters")
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        raise RepoUrlError("repository URL is malformed") from None
+    if parts.scheme.lower() != "https":
+        raise RepoUrlError("only https:// repository URLs are allowed")
+    if "@" in parts.netloc or parts.username is not None or parts.password is not None:
+        raise RepoUrlError("repository URL must not embed credentials (use the token field)")
+    host = (parts.hostname or "").lower().rstrip(".")
+    if not host or host not in allowed_git_hosts():
+        raise RepoUrlError(f"repository host is not allowed (allowed: {', '.join(sorted(allowed_git_hosts()))})")
+    if port not in (None, 443):
+        raise RepoUrlError("repository URL must use the default https port")
+    if parts.path.strip("/") == "":
+        raise RepoUrlError("repository URL has no repository path")
+    return host
+
+
+def _validate_ref(ref: str) -> None:
+    if ref and (ref.startswith("-") or any(ch.isspace() or ord(ch) < 0x20 for ch in ref)):
+        raise RepoUrlError("invalid ref")
 
 
 @dataclass(frozen=True)
@@ -139,18 +201,32 @@ def _git_clone(repo_url: str, ref: str, dest: Path, token: Optional[str] = None)
     the persisted ``origin`` is reset to the token-free URL so the credential never lands in the cloned
     ``.git/config`` or the synced workspace (P15 — mirrors ``GitHubVcs.push``). Git is run with prompts
     disabled so a missing/invalid credential FAILS LOUD instead of hanging on a terminal prompt. Any
-    failure raises ``CloneError`` with the token redacted from the message."""
+    failure raises ``CloneError`` with the token redacted from the message.
+
+    The URL is user-supplied, so it is validated first (``validate_repo_url``: https to an allowlisted
+    host, no userinfo, not option-looking), git is restricted to the https transport, the URL is passed
+    after ``--``, and the token is attached ONLY for a GitHub host — it can never be sent elsewhere."""
+    repo_url = (repo_url or "").strip()
+    _validate_ref(ref)
+    local = _ALLOW_LOCAL_CLONES and _is_local_source(repo_url)
+    host = None if local else validate_repo_url(repo_url)
+    if host not in _GITHUB_TOKEN_HOSTS:
+        token = None
     dest.parent.mkdir(parents=True, exist_ok=True)
     # scrubbed env: a hook-exported GIT_DIR would re-point every op below at the hook's repo
     # (see shared/gitenv.py); prompts stay disabled so a bad credential fails loud.
-    env = scrubbed_git_env(GIT_ASKPASS="true", GIT_TERMINAL_PROMPT="0")
+    allow = "https:file" if local else "https"
+    env = scrubbed_git_env(GIT_ASKPASS="true", GIT_TERMINAL_PROMPT="0", GIT_ALLOW_PROTOCOL=allow)
+    proto_cfg = ["-c", "protocol.allow=never", "-c", "protocol.https.allow=always"]
+    if local:
+        proto_cfg += ["-c", "protocol.file.allow=always"]
     url = _authenticated_url(repo_url, token)
 
     def redact(text: str) -> str:
         return text.replace(token, "***") if token else text
 
     try:
-        subprocess.run(["git", "clone", "--quiet", url, str(dest)],
+        subprocess.run(["git", *proto_cfg, "clone", "--quiet", "--", url, str(dest)],
                        check=True, capture_output=True, text=True, env=env)
         if token:  # never persist the credential in the cloned repo's origin (P15)
             subprocess.run(["git", "-C", str(dest), "remote", "set-url", "origin", repo_url],

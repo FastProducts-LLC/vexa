@@ -43,6 +43,7 @@ from shared.agent_config import default_meeting_model, load_meeting_config
 from shared.seeding import resolve_seed_dir, seed_workspace, validate_seed
 from control_plane.workspace_attach import (
     CloneError,
+    RepoUrlError,
     activate_workspace,
     active_workspaces,
     attached_workspaces,
@@ -1601,6 +1602,8 @@ def create_app(
             raise HTTPException(status_code=400, detail="invalid subject")
         except KeyError:
             raise HTTPException(status_code=404, detail="unknown workspace")
+        except RepoUrlError as exc:  # disallowed scheme/host/credentials — rejected before any git runs
+            raise HTTPException(status_code=400, detail=f"repository not allowed: {exc}")
         except CloneError as exc:
             # message is already token-redacted (P15); private repo without/with a bad token lands here.
             raise HTTPException(status_code=502, detail=f"git clone failed: {exc}")
@@ -1654,6 +1657,8 @@ def create_app(
             raise HTTPException(status_code=400, detail="invalid subject")
         except KeyError:
             raise HTTPException(status_code=404, detail="unknown workspace")
+        except RepoUrlError as exc:  # disallowed scheme/host/credentials — rejected before any git runs
+            raise HTTPException(status_code=400, detail=f"repository not allowed: {exc}")
         except CloneError as exc:
             raise HTTPException(status_code=502, detail=f"git clone failed: {exc}")
         return {"subject": result.subject, "slug": result.slug, "changed": result.changed,
