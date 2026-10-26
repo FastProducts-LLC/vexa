@@ -295,7 +295,7 @@ agentApi:
   service:
     type: ClusterIP
     port: 8100
-  defaultSubject: "u_live"      # VEXA_AGENT_DEFAULT_SUBJECT single-user fallback until gateway fronts agent-api
+  defaultSubject: ""            # VEXA_AGENT_DEFAULT_SUBJECT — honored only with VEXA_REQUIRE_GATEWAY_IDENTITY=0 (dev)
   logLevel: "info"
   # Workspace store the worker mounts and agent-api reads. On k3s (local-path = RWO) keep agentApi at
   # replicaCount 1; full agent-worker dispatch on k8s needs RWX storage (see README — follow-up).

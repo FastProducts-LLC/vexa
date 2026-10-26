@@ -102,7 +102,7 @@
       "key": "VEXA_AGENT_DEFAULT_SUBJECT",
       "class": "defaulted",
       "default": "(empty \u2014 FAIL-CLOSED: 401 when the gateway's X-User-Id is absent)",
-      "description": "single-user fallback subject for a direct/self-host deploy with no gateway in front"
+      "description": "single-user fallback subject for a direct/self-host deploy with no gateway in front; honored ONLY when VEXA_REQUIRE_GATEWAY_IDENTITY=0"
     },
     {
       "key": "VEXA_REDIS_URL",
@@ -328,8 +328,8 @@
     {
       "key": "VEXA_REQUIRE_GATEWAY_IDENTITY",
       "class": "defaulted",
-      "default": "false",
-      "description": "when true, reject callers lacking the gateway-signed X-Gateway-Verified identity marker (hardened multi-tenant topology); default false preserves dev/direct-edge access",
+      "default": "true",
+      "description": "reject identity-bearing requests unless X-Gateway-Verified equals VEXA_INTERNAL_API_SECRET (stamped by the gateway), and require X-Internal-Secret on /invocations + /events; set 0 ONLY for a single-user dev/direct-edge deploy",
       "targets": []
     },
     {

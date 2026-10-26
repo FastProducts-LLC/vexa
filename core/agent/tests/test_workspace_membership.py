@@ -623,11 +623,16 @@ def test_require_gateway_identity_flag_rejects_direct_edge(tmp_path, monkeypatch
     forging X-User-Id. The marker present → normal auth. Default (flag unset) is unaffected."""
     _init_ws(tmp_path, "wsA")
     monkeypatch.setenv("VEXA_REQUIRE_GATEWAY_IDENTITY", "1")
+    monkeypatch.setenv("VEXA_INTERNAL_API_SECRET", "gw-secret")
     c = _client(tmp_path)
     # direct caller forging X-User-Id but lacking the gateway marker → 401
     r = c.get("/api/workspace/members?workspace_id=wsA", headers={"X-User-Id": "attacker"})
     assert r.status_code == 401
     # gateway-fronted request (marker present) reaches the normal role gate (403 non-member, not 401)
     r2 = c.get("/api/workspace/members?workspace_id=wsA",
-               headers={"X-User-Id": "attacker", "X-Gateway-Verified": "1"})
+               headers={"X-User-Id": "attacker", "X-Gateway-Verified": "gw-secret"})
     assert r2.status_code == 403
+    # a forged marker (any non-secret value) is NOT the gateway → 401
+    r3 = c.get("/api/workspace/members?workspace_id=wsA",
+               headers={"X-User-Id": "attacker", "X-Gateway-Verified": "1"})
+    assert r3.status_code == 401

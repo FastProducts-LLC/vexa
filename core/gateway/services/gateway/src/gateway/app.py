@@ -292,6 +292,7 @@ def create_app(
     admin_api_url: str = _DEFAULT_ADMIN_API_URL,
     mcp_url: str = _DEFAULT_MCP_URL,
     rate_limiter=None,
+    internal_api_secret: Optional[str] = None,
 ) -> FastAPI:
     """Build the gateway FastAPI app over the injected ports.
 
@@ -425,7 +426,10 @@ def create_app(
         excluded = {"host", "content-length", "transfer-encoding"}
         headers = {k.lower(): v for k, v in request.headers.items() if k.lower() not in excluded}
         for h in ("x-user-id", "x-user-email", "x-user-scopes", "x-user-limits", "x-user-workspaces",
-                  "x-user-webhook-url", "x-user-webhook-secret", "x-user-webhook-events"):
+                  "x-user-webhook-url", "x-user-webhook-secret", "x-user-webhook-events",
+                  # internal-tier markers are NEVER client-supplied (agent-api trusts identity only
+                  # when the gateway stamps x-gateway-verified itself — see _stamp_agent).
+                  "x-gateway-verified", "x-internal-secret"):
             headers.pop(h, None)
         headers["x-api-key"] = client_key
         headers["x-user-id"] = str(user_id)
@@ -452,11 +456,23 @@ def create_app(
         headers[TRACE_HEADER] = get_trace_id() or ""
         return headers, None
 
+    # agent-api honors X-User-Id only alongside X-Gateway-Verified == the internal-tier secret, so a
+    # direct (non-gateway) caller on the compose network cannot pose as a user. Stamped ONLY on agent
+    # forwards (meeting-api / admin-api / mcp never see the secret through this path).
+    _gateway_secret = internal_api_secret if internal_api_secret is not None else os.getenv(
+        "INTERNAL_API_SECRET", "")
+
+    def _stamp_agent(url: str, headers: dict) -> dict:
+        if _gateway_secret and url.startswith(f"{agent_api_url}/"):
+            headers["x-gateway-verified"] = _gateway_secret
+        return headers
+
     # --- the REST proxy: faithful carve of main.forward_request for client (non-admin) routes.
     async def _forward(method: str, url: str, request: Request, *, api_key: Optional[str] = None) -> Response:
         headers, error = await _authorize(method, request, api_key=api_key)
         if error is not None:
             return error
+        _stamp_agent(url, headers)
 
         content = await request.body()
         # A public gateway must not LEAK its own 500 for an UPSTREAM fault: map a slow upstream → 504 and
@@ -794,6 +810,7 @@ def create_app(
         headers, error = await _authorize(method, request)
         if error is not None:
             return error
+        _stamp_agent(url, headers)
         content = await request.body()
         params = dict(request.query_params) or None
 
