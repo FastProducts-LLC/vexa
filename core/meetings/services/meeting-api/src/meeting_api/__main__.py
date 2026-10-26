@@ -58,6 +58,37 @@ def _require_config(env: "os._Environ | dict | None" = None) -> None:
     from .config_preflight import preflight
 
     preflight(env)
+    _reject_default_secrets(env)
+
+
+# The well-known placeholder values the stock compose file / .env.example / helm chart / lite image
+# have shipped. A deploy that boots with one of these runs with a PUBLIC secret (MeetingToken
+# forgery, internal-edge impersonation), so outside DEV_MODE the boot refuses instead.
+_KNOWN_DEFAULT_SECRETS = {
+    "ADMIN_TOKEN": frozenset({"changeme", "change_me", "dev-admin-token", "admin-token", "token"}),
+    "INTERNAL_API_SECRET": frozenset({"vexa-internal-secret", "lite-internal-secret", "changeme",
+                                      "change_me", "secret"}),
+}
+
+
+def _reject_default_secrets(env: "os._Environ | dict | None" = None) -> None:
+    """Raise ``ConfigError`` naming every secret still set to a known placeholder (case-insensitive),
+    unless ``DEV_MODE=true``. Never echoes the values. An UNSET key is the preflight's concern."""
+    from .config_preflight import ConfigError
+
+    env = os.environ if env is None else env
+    if (env.get("DEV_MODE") or "false").strip().lower() == "true":
+        return
+    bad = sorted(
+        k for k, defaults in _KNOWN_DEFAULT_SECRETS.items()
+        if (env.get(k) or "").strip().lower() in defaults
+    )
+    if bad:
+        raise ConfigError(
+            "meeting-api refuses to boot — these secrets are still set to a published default "
+            f"value: {', '.join(bad)}. Set real values (e.g. `openssl rand -hex 32`), or DEV_MODE=true "
+            "for local development only."
+        )
 
 
 # How many users a calendar sweep syncs at once. Users are independent, so the tick's wall time

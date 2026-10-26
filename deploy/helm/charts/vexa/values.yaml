@@ -48,8 +48,8 @@ global:
 # ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL, CLAUDE_CODE_OAUTH_TOKEN.
 secrets:
   existingSecretName: ""
-  adminApiToken: "CHANGE_ME"        # admin-api auth + MeetingToken signing (== meeting-api ADMIN_TOKEN)
-  internalApiSecret: ""             # gateway↔admin-api↔meeting-api internal calls (default vexa-internal-secret)
+  adminApiToken: ""                 # REQUIRED (render fails if empty/placeholder): admin-api auth + MeetingToken signing (== meeting-api ADMIN_TOKEN)
+  internalApiSecret: ""             # REQUIRED (render fails if empty/placeholder): gateway↔admin-api↔meeting-api↔agent-api internal edge
   transcriptionServiceToken: ""     # funded STT token threaded into spawned bots
   serviceAuthoritySecret: ""        # exact-byte HMAC secret; required only when meetingApi.serviceAuthorityConfig is set
   systemWebhookSecret: ""           # exact-byte HMAC secret; required only when meetingApi.systemWebhookUrl is set

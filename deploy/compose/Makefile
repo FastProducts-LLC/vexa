@@ -14,7 +14,7 @@ COMPOSE  = docker compose -p $(PROJECT) -f docker-compose.yml
 REPO_ROOT := $(abspath ../..)
 BOT_IMAGE ?= vexa/vexa-bot:dev
 
-.PHONY: stack-test stack-test-bot stack-test-mock stack-test-v010 dashboard-harness provision-token up dev digest-audit down build ps logs bot _preflight _bot_check _creds_check _access
+.PHONY: _seed_env stack-test stack-test-bot stack-test-mock stack-test-v010 dashboard-harness provision-token up dev digest-audit down build ps logs bot _preflight _bot_check _creds_check _access
 
 ## provision-token — mint (idempotently) the self-host dashboard's API token (compose bring-up step 2).
 ## Needs ADMIN_TOKEN (the stack admin secret). Prints ONLY the token, so it pipes into the deploy:
@@ -69,7 +69,7 @@ stack-test-v010:
 ## prints an API key. Building from source is `make dev` (images tagged :dev, never v012 names).
 up:
 	@$(MAKE) --no-print-directory _preflight
-	@[ -f .env ] || { echo "→ no .env found; seeding from .env.example"; cp .env.example .env; }
+	@$(MAKE) --no-print-directory _seed_env
 	$(COMPOSE) pull
 	@_tag=$$(grep -E '^IMAGE_TAG=' .env | head -1 | cut -d= -f2- | tr -d '[:space:]'); _tag=$${_tag:-v012}; \
 	 echo "→ pulling spawn-time images (agent-worker is a build-only compose profile pull skips)"; \
@@ -87,7 +87,7 @@ up:
 ## interpolated refs (AGENT_WORKER_IMAGE etc.) follow IMAGE_TAG=dev coherently.
 dev:
 	@$(MAKE) --no-print-directory _preflight
-	@[ -f .env ] || { echo "→ no .env found; seeding from .env.example"; cp .env.example .env; }
+	@$(MAKE) --no-print-directory _seed_env
 	IMAGE_TAG=dev $(COMPOSE) up -d --build
 	@# Every remaining step must RUN and the target must exit non-zero naming EVERY gap. A failed
 	@# agent-worker build (a transient apt flake, #716) must NOT abort BEFORE the bot-image check —
@@ -116,6 +116,22 @@ digest-audit:
 	   else echo "✓ $$img ⇐ $$d"; fi; \
 	 done; \
 	 [ "$$fail" = 0 ] && echo "✓ digest audit clean — every $$_tag image on this host is the published artifact" || exit 1
+
+## _seed_env — seed .env from .env.example if absent, then fill an EMPTY ADMIN_TOKEN /
+## INTERNAL_API_SECRET with a random value (the compose file has no defaults for them and refuses to
+## start while they are unset). A value already set in .env is never touched.
+_seed_env:
+	@[ -f .env ] || { echo "→ no .env found; seeding from .env.example"; cp .env.example .env; }
+	@for k in ADMIN_TOKEN INTERNAL_API_SECRET; do \
+	   v=$$(grep -E "^$$k=" .env | head -1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$$//; s/[[:space:]]+$$//'); \
+	   if [ -z "$$v" ]; then \
+	     r=$$(openssl rand -hex 32 2>/dev/null || od -An -N32 -tx1 /dev/urandom | tr -d ' \n'); \
+	     [ -n "$$r" ] || { echo "✗ could not generate a random $$k — set it in .env"; exit 1; }; \
+	     if grep -qE "^$$k=" .env; then sed -i.bak -E "s|^$$k=.*|$$k=$$r|" .env && rm -f .env.bak; \
+	     else printf '%s=%s\n' "$$k" "$$r" >> .env; fi; \
+	     echo "→ generated a random $$k in .env"; \
+	   fi; \
+	 done
 
 ## _preflight — fail fast on a too-old Docker engine: agent workers mount workspaces via the Mounts
 ## API's named-volume Subpath, which needs engine ≥ v26 — an older engine fails every worker create

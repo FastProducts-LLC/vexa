@@ -87,7 +87,16 @@
    "class": "defaulted",
    "default": "(unset — the internal lifecycle-callback header is then not attached)",
    "secret": true,
-   "description": "shared secret for internal service-to-service calls (x-internal-secret on the self-driven lifecycle callback)"
+   "description": "shared secret for internal service-to-service calls (x-internal-secret on the self-driven lifecycle callback); the boot refuses a published placeholder value unless DEV_MODE=true"
+  },
+  {
+   "key": "DEV_MODE",
+   "class": "defaulted",
+   "default": "false",
+   "description": "local development only: when true, the boot tolerates published placeholder ADMIN_TOKEN / INTERNAL_API_SECRET values (changeme, vexa-internal-secret, ...)",
+   "targets": [
+    "compose"
+   ]
   },
   {
    "key": "DEFAULT_BOT_NAME",
