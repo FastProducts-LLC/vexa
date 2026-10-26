@@ -1,14 +1,16 @@
-/** Direct email login — no SMTP, no magic link. POST {email} → find-or-create the user at admin-api,
- *  mint an APIToken (scopes bot,tx,browser), set the httpOnly `vexa-token` + `vexa-user-info` cookies.
+/** Direct email login — DEV / E2E ONLY. POST {email} → find-or-create the user at admin-api, mint an
+ *  APIToken (scopes bot,tx,browser), set the httpOnly `vexa-token` + `vexa-user-info` cookies.
  *
- *  Mirrors the dashboard's VEXA_ALLOW_DIRECT_LOGIN branch (without importing it). No email is ever sent.
- *  OFF unless VEXA_ALLOW_DIRECT_LOGIN=true: it mints a token for ANY matching email with the server's
- *  admin key (no proof of mailbox ownership) — and on a fresh instance the first login claims admin.
+ *  There is no credential check, so it is 404 unless the dev-login gate is open (VEXA_TERMINAL_DEV_LOGIN=1,
+ *  NODE_ENV != production) and the email EXACTLY matches VEXA_TERMINAL_DEV_LOGIN_EMAILS — see devLogin.ts.
+ *  It NEVER claims the first-run admin role: admin bootstrap requires the real OAuth flow.
+ *  Real sign-in is Google/Microsoft OAuth (api/auth/[...nextauth]).
  *  Must never be cached — a cached response would pin one identity for every subsequent login.
  */
 import { NextResponse, type NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { AUTH_COOKIE, USER_INFO_COOKIE, findOrCreateUserToken } from "../adminApi";
+import { devLoginAllowed, devLoginEnabled } from "./devLogin";
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
@@ -25,7 +27,7 @@ function isSecureRequest(): boolean {
 }
 
 export async function POST(request: NextRequest) {
-  if (process.env.VEXA_ALLOW_DIRECT_LOGIN !== "true") {
+  if (!devLoginEnabled()) {
     return NextResponse.json({ error: "Not found" }, { status: 404, headers: NO_STORE });
   }
   let email: unknown;
@@ -42,16 +44,17 @@ export async function POST(request: NextRequest) {
   if (!EMAIL_RE.test(normalized)) {
     return NextResponse.json({ error: "Invalid email format" }, { status: 400, headers: NO_STORE });
   }
-  // Direct email login is a DEBUG path only — real sign-in goes through Google/Microsoft OAuth
-  // (api/auth/[...nextauth]). Restrict it to test accounts so it can't be used as a password-less bypass.
-  if (!normalized.includes("test")) {
+  // Exact allowlist match only — never a substring/domain test (C6: any email containing "test" used
+  // to get a session, and on a fresh instance the admin role).
+  if (!devLoginAllowed(normalized)) {
     return NextResponse.json(
-      { error: "Direct email login is for test accounts only — use Google or Microsoft sign-in." },
+      { error: "This email is not enabled for dev login — use Google or Microsoft sign-in." },
       { status: 403, headers: NO_STORE },
     );
   }
 
-  const result = await findOrCreateUserToken(normalized);
+  // bootstrapAdmin: false — a credential-less login must never claim the first-run admin role.
+  const result = await findOrCreateUserToken(normalized, { bootstrapAdmin: false });
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: result.status || 500, headers: NO_STORE });
   }
