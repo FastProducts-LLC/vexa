@@ -49,6 +49,9 @@ class ProcessIsolation:
     private: tuple[str, ...] = ()
     shared: tuple[tuple[str, str], ...] = ()   # (path, workspace slug/id) — gid resolved at apply
     groups: tuple[int, ...] = field(default=(), compare=False)  # filled by apply (registry-backed)
+    # C1: False when the dispatch's model endpoint was chosen by the subject (VEXA_MODEL_MODE=custom)
+    # — the deployment's subscription credentials are then NOT staged into the worker HOME.
+    stage_subscription_creds: bool = True
 
 
 def plan_process_isolation(env: Mapping[str, str], *, euid: Optional[int] = None) -> Optional[ProcessIsolation]:
@@ -78,8 +81,10 @@ def plan_process_isolation(env: Mapping[str, str], *, euid: Optional[int] = None
             shared.append((path, str(m.get("slug") or os.path.basename(path.rstrip("/")))))
         # role == "global": root-owned world-readable — enforced ro by ownership, nothing to do
     home = os.path.join(root, ".home", subject)
+    custom_endpoint = (env.get("VEXA_MODEL_MODE") or "").strip().lower() == "custom"
     return ProcessIsolation(uid=uid, gid=uid, store_root=root, home=home,
-                            private=tuple(private), shared=tuple(shared))
+                            private=tuple(private), shared=tuple(shared),
+                            stage_subscription_creds=not custom_endpoint)
 
 
 def _unavailable(reason: str) -> None:
@@ -184,9 +189,10 @@ def apply_process_isolation(plan: ProcessIsolation) -> ProcessIsolation:
         if st.st_gid != gid or stat.S_IMODE(st.st_mode) != 0o2770:
             _chown_tree(path, 0, gid)
             os.chmod(path, 0o2770)   # setgid: new files inherit the workspace group
-    # subscription credentials live under /root — copy them into the subject HOME the worker can read
+    # subscription credentials live under /root — copy them into the subject HOME the worker can read.
+    # C1: never for a subject-supplied endpoint (the worker must carry ONLY the subject's own key).
     creds_src = os.path.expanduser("~/.claude/.credentials.json")
-    if os.path.isfile(creds_src):
+    if plan.stage_subscription_creds and os.path.isfile(creds_src):
         dot = os.path.join(plan.home, ".claude")
         os.makedirs(dot, exist_ok=True)
         dst = os.path.join(dot, ".credentials.json")

@@ -27,6 +27,26 @@ MANAGED_LABEL = "runtime.managed"
 WORKLOAD_ID_LABEL = "runtime.workload_id"
 _COMPOSE_LABEL = "com.docker.compose.project"
 
+
+# C1: the deployment-owned endpoint/credential env the runtime brokers into workers. A dispatch
+# marked VEXA_MODEL_MODE=custom (agent-api: the SUBJECT chose base_url + api_key in Settings →
+# Models) must not receive any of these, nor the HOST_CLAUDE_CREDENTIALS subscription mount.
+MODEL_MODE_ENV = "VEXA_MODEL_MODE"
+MODEL_MODE_CUSTOM = "custom"
+DEPLOYMENT_CREDENTIAL_ENV = frozenset({
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "VEXA_LLM_API_KEY",
+    "VEXA_LLM_BASE_URL",
+})
+
+
+def subject_supplied_endpoint(env: "dict[str, str] | None") -> bool:
+    """True when the dispatch env says its model endpoint was chosen by the subject."""
+    return bool(env) and (env.get(MODEL_MODE_ENV) or "").strip().lower() == MODEL_MODE_CUSTOM
+
 logger = logging.getLogger("runtime_kernel.docker_backend")
 
 
@@ -223,8 +243,15 @@ class DockerBackend:
         # The Runtime BROKERS model credentials. Subscription credentials are mounted read-only;
         # API-style provider env (the VEXA_LLM_* completion dials + the claude-code runner's
         # ANTHROPIC_*) is copied from the trusted runtime service into spawned workers.
+        #
+        # C1 EXCEPTION: a dispatch whose endpoint was chosen by the SUBJECT (agent-api stamps
+        # VEXA_MODEL_MODE=custom together with the subject's own base_url + api_key) gets NONE of the
+        # deployment's credentials — not the subscription file, not ANTHROPIC_*/VEXA_LLM_* from this
+        # service's env. Otherwise the claude CLI / completion adapters would carry the deployment's
+        # paid key or OAuth token to whatever host the subject typed into Settings → Models.
+        custom_endpoint = subject_supplied_endpoint(env)
         creds = os.getenv("HOST_CLAUDE_CREDENTIALS")
-        if creds:
+        if creds and not custom_endpoint:
             binds.append(f"{creds}:/root/.claude/.credentials.json:ro")
         # DEV hot-mount (parallels the dev.yml service hot-reload): bind the HOST agent_api source over
         # the image's baked copy so a SPAWNED worker runs the latest worker.py with NO image rebuild —
@@ -255,6 +282,8 @@ class DockerBackend:
             "ANTHROPIC_DEFAULT_SONNET_MODEL",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL",
         ):
+            if custom_endpoint and key in DEPLOYMENT_CREDENTIAL_ENV:
+                continue  # C1: the subject's endpoint never sees the deployment's endpoint/credentials
             value = os.getenv(key)
             if value and key not in spawn_env:
                 spawn_env[key] = value

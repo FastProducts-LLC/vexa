@@ -191,6 +191,24 @@
       ]
     },
     {
+      "key": "VEXA_MODEL_BASE_URL_ALLOWLIST",
+      "class": "defaulted",
+      "default": "(empty \u2014 any PUBLIC host)",
+      "description": "C1: hostnames a Settings \u2192 Models custom base_url may name (comma-separated; '.example.com' = the domain and its subdomains). A subject-supplied endpoint only ever receives the subject's own api_key \u2014 never the deployment's ANTHROPIC_*/CLAUDE_CODE_OAUTH_TOKEN/VEXA_LLM_API_KEY or the subscription mount \u2014 and a host off this list is dropped (deployment default applies). Set the same value on admin-api so the Settings writer 422s instead of storing a dead endpoint.",
+      "targets": [
+        "compose"
+      ]
+    },
+    {
+      "key": "VEXA_MODEL_ALLOW_PRIVATE_ENDPOINTS",
+      "class": "defaulted",
+      "default": "false",
+      "description": "C1: set to 1 to let a custom base_url name a private/loopback/link-local address, localhost, *.internal/*.local, or a dotless service name (e.g. a LiteLLM on the compose network). Off by default: a tenant must not be able to aim a worker at admin-api, redis or the metadata service.",
+      "targets": [
+        "compose"
+      ]
+    },
+    {
       "key": "VEXA_MEETING_IDLE_TIMEOUT_SEC",
       "class": "defaulted",
       "default": "14400",
