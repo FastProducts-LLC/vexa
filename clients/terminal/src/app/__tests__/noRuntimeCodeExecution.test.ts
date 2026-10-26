@@ -5,9 +5,9 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildContentSecurityPolicy, securityHeaders } from "../../csp.mjs";
+import { buildContentSecurityPolicy, securityHeaders } from "../../../csp.mjs";
 
-const SRC = join(__dirname, "..");
+const SRC = join(__dirname, "..", "..");
 const ROOT = join(SRC, "..");
 
 function walk(dir: string, out: string[] = []): string[] {

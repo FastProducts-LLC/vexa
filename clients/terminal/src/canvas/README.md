@@ -25,5 +25,5 @@ Both are enforced at the browser level by the terminal's Content-Security-Policy
 responses carry `script-src` WITHOUT `'unsafe-eval'`, so `eval` / `new Function` throw in this origin. If a
 generative-UI feature is ever reintroduced it must run model-authored code in an opaque-origin sandboxed
 iframe (`sandbox="allow-scripts"` without `allow-same-origin`, data in / actions out over `postMessage`),
-never in the app origin. `src/__tests__/noRuntimeCodeExecution.test.ts` fails the suite if an eval path or
+never in the app origin. `src/app/__tests__/noRuntimeCodeExecution.test.ts` fails the suite if an eval path or
 one of the removed dependencies comes back.
