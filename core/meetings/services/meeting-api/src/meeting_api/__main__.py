@@ -63,11 +63,16 @@ def _require_config(env: "os._Environ | dict | None" = None) -> None:
 
 # The well-known placeholder values the stock compose file / .env.example / helm chart / lite image
 # have shipped. A deploy that boots with one of these runs with a PUBLIC secret (MeetingToken
-# forgery, internal-edge impersonation), so outside DEV_MODE the boot refuses instead.
+# forgery, internal-edge impersonation, an open database / object store), so outside DEV_MODE the
+# boot refuses instead.
 _KNOWN_DEFAULT_SECRETS = {
     "ADMIN_TOKEN": frozenset({"changeme", "change_me", "dev-admin-token", "admin-token", "token"}),
     "INTERNAL_API_SECRET": frozenset({"vexa-internal-secret", "lite-internal-secret", "changeme",
                                       "change_me", "secret"}),
+    # C4: the infra credentials the stock compose file used to default — a deploy still on them has a
+    # world-readable database / object store on any network that also carries workloads.
+    "DB_PASSWORD": frozenset({"postgres", "password", "changeme", "change_me"}),
+    "MINIO_SECRET_KEY": frozenset({"vexa-secret-key", "minioadmin", "changeme", "change_me"}),
 }
 
 

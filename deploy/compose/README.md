@@ -48,3 +48,53 @@ Expected / Actual / Verdict; a red stage names where the journey broke and fails
 With the mock bot as `BROWSER_IMAGE` (`mock-bot:dev`) the journey is a deterministic green,
 transcript included; with the real bot it drives a dead synthetic meeting to a truthful named
 `join_failure`. See `deploy/compose/probe.sh` (a wrapper over `scripts/probe/journey.sh`).
+
+## Secrets and networks (C4 hardening)
+
+The stack has **no default secrets**. `docker compose` refuses to start until every one of these
+is set in `deploy/compose/.env` (`make up` / `make dev` generate missing ones with
+`openssl rand -hex 32`; `make _seed_env` alone does just that):
+
+| variable | used by |
+|---|---|
+| `ADMIN_TOKEN` | admin-api auth, MeetingToken signing (meeting-api), terminal/dashboard admin key |
+| `INTERNAL_API_SECRET` | the internal service edge: gateway ⇄ admin-api / meeting-api / agent-api, the runtime's workload callbacks, the bot's lifecycle callback |
+| `DB_PASSWORD` | postgres, admin-api, meeting-api |
+| `MINIO_SECRET_KEY` | minio root password, meeting-api S3 secret |
+| `REDIS_PASSWORD` | valkey `--requirepass`; every `REDIS_URL` / `VEXA_REDIS_URL` is `redis://:${REDIS_PASSWORD}@redis:6379/0` (URL-safe characters only — use hex) |
+| `NEXTAUTH_SECRET` | terminal (and the deprecated dashboard) session/JWT secret |
+| `VEXA_DISPATCH_SIGNING_KEY` | agent-api's per-dispatch worker tokens |
+
+meeting-api additionally refuses to boot (outside `DEV_MODE=true`) when `ADMIN_TOKEN`,
+`INTERNAL_API_SECRET`, `DB_PASSWORD` or `MINIO_SECRET_KEY` still hold one of the old published
+placeholders (`changeme`, `vexa-internal-secret`, `postgres`, `vexa-secret-key`, …).
+
+**Internal callbacks are authenticated.** `POST /runtime/callback` needs
+`X-Internal-Secret == INTERNAL_API_SECRET` (the runtime stamps it on every RuntimeEvent);
+`POST /bots/internal/callback/lifecycle` needs the bot's `X-Internal-Secret` *or* its MeetingToken
+as `Authorization: Bearer`. Both fail closed (503) when unconfigured outside `DEV_MODE`.
+
+**Two networks.** `vexa` is the control plane (every long-running service; the runtime with the
+Docker socket, postgres, minio, admin-api and agent-api live *only* here). `bots` is the workloads
+network: the runtime spawns every meeting bot and agent worker onto it (`DOCKER_NETWORK=
+${COMPOSE_PROJECT_NAME}_bots`), and it carries only `redis` and `meeting-api`. A compromised bot can
+therefore reach neither the runtime API nor the databases nor the identity plane. Both networks keep
+internet egress (bots join meetings, workers call model APIs).
+
+### Rolling an existing stack onto this layout
+
+`DOCKER_NETWORK` is also the discriminator the runtime uses to **re-adopt live workloads** after a
+restart: bots started on `${project}_vexa` will not be re-adopted once it points at `${project}_bots`.
+Do the roll in a bot-free window:
+
+1. Add the new variables to `.env` (`make _seed_env`), and pick a hex `REDIS_PASSWORD`.
+2. Stop every running bot (`GET /bots/status` must be empty) and let agent workers finish.
+3. `docker compose up -d` — compose creates `bots`, recreates `redis` with `--requirepass`
+   (the data volume is kept), and re-attaches `redis` and `meeting-api` to both networks.
+4. Verify: `docker network inspect <project>_bots` lists only redis and meeting-api; send a bot and
+   confirm it appears on `_bots` and reaches `joining`.
+
+Follow-up (not done here): the runtime still mounts `/var/run/docker.sock`; fronting it with a
+socket proxy that allows only the container create/inspect/stop/remove calls the kernel uses would
+remove the last host-takeover path from the control plane.
+

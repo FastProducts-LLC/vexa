@@ -447,13 +447,13 @@ def test_03_real_bot_spawn_joining(stack):
             )
         STATE["bot_container_name"] = appeared
 
-        # Belt-and-suspenders: ensure the bot sits on THIS project's compose network so its lifecycle
+        # Belt-and-suspenders: ensure the bot sits on THIS project's WORKLOADS network so its lifecycle
         # callback (http://meeting-api:8080/…) + redis can resolve. The runtime already attaches it via
-        # DOCKER_NETWORK=${COMPOSE_PROJECT_NAME}_vexa (connect on an attached container is a no-op error,
+        # DOCKER_NETWORK=${COMPOSE_PROJECT_NAME}_bots (connect on an attached container is a no-op error,
         # swallowed). Named deterministically — the old any-`*_vexa` scan could attach the bot to ANOTHER
-        # stack's network on a shared host.
+        # stack's network on a shared host. NEVER the control-plane `_vexa` network (C4 split).
         from conftest import PROJECT
-        subprocess.run(["docker", "network", "connect", f"{PROJECT}_vexa", container_name],
+        subprocess.run(["docker", "network", "connect", f"{PROJECT}_bots", container_name],
                        capture_output=True, timeout=20)
 
         # PROOF (b): the meeting advances to `joining` — the bot's first lifecycle callback lands.
@@ -531,9 +531,18 @@ def test_07_webhook_delivery_outcome_reported(stack):
         """"webhook_events": {"meeting.status_change": true}}'::jsonb """
         f"WHERE id = {meeting_id};"
     )
+    # C4: the lifecycle callback is an authenticated edge — an unauthenticated POST is refused
+    # (403) and the FSM does not move; the bot's own credential (its internal secret) is accepted.
     code, body = post_json(
         f"{stack.meeting_api}/bots/internal/callback/lifecycle",
         {"connection_id": session_uid, "status": "completed", "completion_reason": "stopped"},
+        timeout=20,
+    )
+    assert code == 403, f"unauthenticated lifecycle callback must be refused: {code} {body!r}"
+    code, body = post_json(
+        f"{stack.meeting_api}/bots/internal/callback/lifecycle",
+        {"connection_id": session_uid, "status": "completed", "completion_reason": "stopped"},
+        headers={"X-Internal-Secret": stack.internal_secret},
         timeout=20,
     )
     assert code == 200, f"lifecycle callback: {code} {body!r}"

@@ -1,4 +1,5 @@
-"""The boot refuses published placeholder secrets (ADMIN_TOKEN / INTERNAL_API_SECRET).
+"""The boot refuses published placeholder secrets (ADMIN_TOKEN / INTERNAL_API_SECRET / DB_PASSWORD /
+MINIO_SECRET_KEY).
 
 The stock compose file, .env.example, helm chart and lite image have shipped public values
 (``changeme``, ``dev-admin-token``, ``vexa-internal-secret``, ...). A deploy booting with one of them
@@ -22,6 +23,10 @@ REAL_INTERNAL = "b7e1d9c3a5f2e8b4c6d0a2f9e7b5c3d1"
     ("INTERNAL_API_SECRET", "vexa-internal-secret"),
     ("INTERNAL_API_SECRET", "lite-internal-secret"),
     ("INTERNAL_API_SECRET", " vexa-internal-secret "),
+    ("DB_PASSWORD", "postgres"),
+    ("DB_PASSWORD", "Postgres"),
+    ("MINIO_SECRET_KEY", "vexa-secret-key"),
+    ("MINIO_SECRET_KEY", "minioadmin"),
 ])
 def test_placeholder_secret_refuses_boot(key, value):
     env = {"ADMIN_TOKEN": REAL_ADMIN, "INTERNAL_API_SECRET": REAL_INTERNAL, key: value}
@@ -44,6 +49,11 @@ def test_real_secrets_boot():
 
 def test_unset_internal_secret_is_not_this_checks_concern():
     entry._reject_default_secrets({"ADMIN_TOKEN": REAL_ADMIN})
+
+
+def test_real_infra_credentials_boot():
+    entry._reject_default_secrets({"ADMIN_TOKEN": REAL_ADMIN, "INTERNAL_API_SECRET": REAL_INTERNAL,
+                                   "DB_PASSWORD": "a9f3c1e7b5d2", "MINIO_SECRET_KEY": "7c2e9b4d1f6a"})
 
 
 def test_dev_mode_tolerates_placeholders():
