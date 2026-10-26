@@ -122,7 +122,7 @@ digest-audit:
 ## start while they are unset). A value already set in .env is never touched.
 _seed_env:
 	@[ -f .env ] || { echo "→ no .env found; seeding from .env.example"; cp .env.example .env; }
-	@for k in ADMIN_TOKEN INTERNAL_API_SECRET; do \
+	@for k in ADMIN_TOKEN INTERNAL_API_SECRET RUNTIME_API_TOKEN; do \
 	   v=$$(grep -E "^$$k=" .env | head -1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$$//; s/[[:space:]]+$$//'); \
 	   if [ -z "$$v" ]; then \
 	     r=$$(openssl rand -hex 32 2>/dev/null || od -An -N32 -tx1 /dev/urandom | tr -d ' \n'); \

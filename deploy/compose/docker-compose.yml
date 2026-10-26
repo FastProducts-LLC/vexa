@@ -160,7 +160,17 @@ services:
       - ANTHROPIC_DEFAULT_OPUS_MODEL=${ANTHROPIC_DEFAULT_OPUS_MODEL:-}
       - ANTHROPIC_DEFAULT_SONNET_MODEL=${ANTHROPIC_DEFAULT_SONNET_MODEL:-}
       - ANTHROPIC_DEFAULT_HAIKU_MODEL=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}
-      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:-vexa-internal-secret}
+      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set}
+      # Control-plane bearer (security finding C5): every route but /health requires
+      # `Authorization: Bearer $RUNTIME_API_TOKEN`; unset → the runtime fails closed (503). The SAME
+      # value goes to meeting-api (RUNTIME_API_TOKEN) and agent-api (VEXA_RUNTIME_API_TOKEN). REQUIRED
+      # (no default): `compose up` aborts when unset. .env.example's value is local-dev only —
+      # meeting-api's DEV_MODE=false preflight refuses it.
+      - RUNTIME_API_TOKEN=${RUNTIME_API_TOKEN:?RUNTIME_API_TOKEN must be set}
+      # Server-side allowlist of bind SOURCES a workload's mount env may name (C5). Request-declared
+      # host paths / volumes outside it are rejected 400; the docker socket and core host dirs are
+      # always refused. Default = the agent workspace store volume + the optional _global host dir.
+      - RUNTIME_MOUNT_SOURCE_ALLOWLIST=${RUNTIME_MOUNT_SOURCE_ALLOWLIST:-${COMPOSE_PROJECT_NAME:-vexa-v012}_agent-workspaces,${VEXA_GLOBAL_SYSTEM_WORKSPACE_PATH:-}}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       # Spawn the bot onto THIS compose network so it resolves meeting-api:8080 (lifecycle callback)
       # + redis. Must equal the project-prefixed network name (DockerBackend → HostConfig.NetworkMode).
@@ -218,6 +228,8 @@ services:
     environment:
       - VEXA_AGENT_API_PORT=8100
       - VEXA_RUNTIME_API_URL=http://runtime:8090
+      # C5: bearer for the runtime control plane — must equal the runtime's RUNTIME_API_TOKEN.
+      - VEXA_RUNTIME_API_TOKEN=${RUNTIME_API_TOKEN:?RUNTIME_API_TOKEN must be set}
       # P0 SSE ownership: agent-api verifies meeting-row ownership before opening /api/meeting/stream (owner-scoped like /ws).
       - VEXA_MEETING_API_URL=http://meeting-api:8080
       # How the runtime's scheduler reaches this service's /invocations sink when a routine fires (MVP2).
@@ -299,6 +311,8 @@ services:
       - DB_PASSWORD=${DB_PASSWORD:-postgres}
       - REDIS_URL=redis://redis:6379/0
       - RUNTIME_API_URL=http://runtime:8090
+      # C5: bearer for the runtime control plane — must equal the runtime's RUNTIME_API_TOKEN.
+      - RUNTIME_API_TOKEN=${RUNTIME_API_TOKEN:?RUNTIME_API_TOKEN must be set in deploy/compose/.env}
       - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set in deploy/compose/.env}
       # The bot's display name in the meeting. The terminal omits bot_name on join, so this is what
       # participants see; set DEFAULT_BOT_NAME in .env and restart meeting-api (no terminal rebuild).

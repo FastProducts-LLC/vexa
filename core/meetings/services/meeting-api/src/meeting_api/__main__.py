@@ -68,6 +68,9 @@ _KNOWN_DEFAULT_SECRETS = {
     "ADMIN_TOKEN": frozenset({"changeme", "change_me", "dev-admin-token", "admin-token", "token"}),
     "INTERNAL_API_SECRET": frozenset({"vexa-internal-secret", "lite-internal-secret", "changeme",
                                       "change_me", "secret"}),
+    # C5: the runtime control-plane bearer. UNSET counts too — without it every spawn is refused by
+    # the fail-closed runtime, so a production boot refuses instead of 503-ing every POST /bots.
+    "RUNTIME_API_TOKEN": frozenset({"", "vexa-runtime-dev-token"}),
 }
 
 
@@ -85,7 +88,7 @@ def _reject_default_secrets(env: "os._Environ | dict | None" = None) -> None:
     )
     if bad:
         raise ConfigError(
-            "meeting-api refuses to boot — these secrets are still set to a published default "
+            "meeting-api refuses to boot — these secrets are unset or still set to a published default "
             f"value: {', '.join(bad)}. Set real values (e.g. `openssl rand -hex 32`), or DEV_MODE=true "
             "for local development only."
         )
@@ -134,7 +137,7 @@ def build_production_app():
 
     from . import create_app
     from .db import build_engine
-    from .bot_spawn.adapters import HttpRuntimeClient, SqlAlchemyMeetingRepo
+    from .bot_spawn.adapters import HttpRuntimeClient, SqlAlchemyMeetingRepo, runtime_auth_headers
     from .collector.adapters import RedisStreamBus, SqlAlchemyTranscriptStore
     from .recordings.adapters import S3Storage, SqlAlchemyRecordingRepo
 
@@ -165,7 +168,8 @@ def build_production_app():
 
     import httpx
 
-    runtime_http = httpx.AsyncClient(timeout=30.0)
+    # C5: the runtime requires a bearer on every control-plane route (RUNTIME_API_TOKEN, shared).
+    runtime_http = httpx.AsyncClient(timeout=30.0, headers=runtime_auth_headers())
     runtime_client = HttpRuntimeClient(runtime_http, runtime_api_url)
     from .service_authority import build_service_authority_from_env
 

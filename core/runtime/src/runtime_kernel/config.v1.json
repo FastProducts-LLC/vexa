@@ -31,6 +31,29 @@
    ]
   },
   {
+   "key": "RUNTIME_API_TOKEN",
+   "class": "defaulted",
+   "default": "(unset ⇒ fail closed: every route except /health answers 503)",
+   "secret": true,
+   "description": "control-plane bearer (security finding C5): every route except /health requires `Authorization: Bearer <token>` (constant-time compare); the same value is set on meeting-api (RUNTIME_API_TOKEN) and agent-api (VEXA_RUNTIME_API_TOKEN)"
+  },
+  {
+   "key": "RUNTIME_MOUNT_SOURCE_ALLOWLIST",
+   "class": "defaulted",
+   "default": "(empty ⇒ no request-declared bind source is allowed)",
+   "description": "server-side allowlist (comma-separated) of bind SOURCES a workload's mount env may name: `/…` entries are host-path prefixes, others exact named volumes. `..`, `:`/`,`, the docker/containerd sockets and core host dirs are always refused (C5)",
+   "targets": [
+    "compose"
+   ]
+  },
+  {
+   "key": "RUNTIME_API_INSECURE_NO_AUTH",
+   "class": "defaulted",
+   "default": "(unset)",
+   "description": "explicit opt-out of the control-plane bearer for unit tests / throwaway local stacks only; ignored when RUNTIME_API_TOKEN is set",
+   "targets": []
+  },
+  {
    "key": "LOG_LEVEL",
    "class": "defaulted",
    "default": "info",
