@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from .callbacks import CallbackQueue
+from .callbacks import CallbackQueue, internal_callback_headers
 from .kernel import QuotaExceeded, Runtime, StartFailed
 from .models import RuntimeEvent, StopReason, WorkloadSpec
 from .obs import TraceMiddleware, log_event
@@ -36,7 +36,9 @@ def _queue_deliver(rt: Runtime, queue: CallbackQueue) -> Callable[[RuntimeEvent]
         url = record.spec.callbackUrl if record else None
         if not url:
             return
-        queue.enqueue(url, ev.model_dump(exclude_none=True))
+        # C4: the receiver (meeting-api /runtime/callback) authenticates the kernel by the stack's
+        # internal secret; read per delivery so the value is never captured at import time.
+        queue.enqueue(url, ev.model_dump(exclude_none=True), headers=internal_callback_headers())
     return deliver
 
 

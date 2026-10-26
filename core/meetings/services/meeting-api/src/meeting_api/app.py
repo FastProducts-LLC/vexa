@@ -250,6 +250,7 @@ def create_app(
         redis,
         transcript_finalizer,
         delivery_ledger,
+        token_secret=token_secret,
     )
 
     # --- bot_spawn: POST /bots (invocation.v1 + runtime.v1) ---
@@ -351,6 +352,7 @@ def _mount_lifecycle(
     redis: "object" = None,
     transcript_finalizer: "object" = None,
     delivery_ledger: "object" = None,
+    token_secret: Optional[str] = None,
 ) -> None:
     """Register the lifecycle.v1 callback route on the unified app (the lifecycle receiver's
     ``/bots/internal/callback/lifecycle`` handler, sharing the app's TraceMiddleware).
@@ -371,6 +373,7 @@ def _mount_lifecycle(
 
     from .lifecycle.machine import IllegalTransition, TransitionSource
     from .lifecycle.provenance import build_service_provenance
+    from .callback_auth import check_bot_callback, check_runtime_callback
     from .lifecycle.receiver import conforms
     from .lifecycle.webhook import build_status_change_envelope, build_typed_envelope
     from .obs import log_event
@@ -881,6 +884,13 @@ def _mount_lifecycle(
 
     @app.post("/bots/internal/callback/lifecycle")
     async def lifecycle_callback(request: Request) -> JSONResponse:
+        # C4 trust edge: only the bot itself (its internal secret OR its MeetingToken) may drive
+        # the FSM; anything else on the network is refused BEFORE the body is parsed.
+        verdict = check_bot_callback(request.headers, token_secret=token_secret)
+        if verdict is not None:
+            log_event("lifecycle_callback_refused", audience="system", level="warning",
+                      span="lifecycle.callback", fields={"status": verdict[0], "detail": verdict[1]})
+            return JSONResponse(status_code=verdict[0], content={"detail": verdict[1]})
         body = await request.json()
         status_code, content = await _apply_lifecycle_event(
             body, transition_source=TransitionSource.BOT_CALLBACK
@@ -911,6 +921,13 @@ def _mount_lifecycle(
         completed`` is illegal for a bot-driven edge). The direct in-process call advances the SAME FSM
         instance, and the runtime-destroy source forces the terminal edge on real teardown evidence, so
         the meeting reaches terminal, the reaper stops, and the copilot ``session_end`` reap fires."""
+        # C4 trust edge: only the runtime kernel (x-internal-secret == INTERNAL_API_SECRET) may
+        # post workload evidence — a forged `destroyed` would otherwise fail/complete a live meeting.
+        verdict = check_runtime_callback(request.headers)
+        if verdict is not None:
+            log_event("runtime_callback_refused", audience="system", level="warning",
+                      span="runtime.callback", fields={"status": verdict[0], "detail": verdict[1]})
+            return JSONResponse(status_code=verdict[0], content={"detail": verdict[1]})
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001
