@@ -66,6 +66,8 @@ RUNTIME_URL = f"http://127.0.0.1:{RUNTIME_HOST_PORT}"
 
 # Env the stack boots with — pinned so the test knows the secrets it must present.
 ADMIN_TOKEN = "gate-admin-token"
+# C5: the runtime control-plane bearer — REQUIRED by the compose file (no default).
+RUNTIME_API_TOKEN = "gate-runtime-api-token"
 INTERNAL_API_SECRET = "gate-internal-secret"
 MINIO_BUCKET = "vexa"
 
@@ -113,6 +115,7 @@ def _stack_env() -> dict:
         "COMPOSE_PROJECT_NAME": PROJECT,
         "ADMIN_TOKEN": ADMIN_TOKEN,
         "INTERNAL_API_SECRET": INTERNAL_API_SECRET,
+        "RUNTIME_API_TOKEN": RUNTIME_API_TOKEN,
         "MINIO_BUCKET": MINIO_BUCKET,
         "BROWSER_IMAGE": os.getenv("BROWSER_IMAGE", "vexaai/vexa-bot:v012"),
         "API_GATEWAY_HOST_PORT": GATEWAY_PORT,
