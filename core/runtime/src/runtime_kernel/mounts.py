@@ -62,6 +62,100 @@ def _under(path: str, root: str) -> bool:
     return p == r or p.startswith(r.rstrip("/") + "/")
 
 
+# ── mount-source policy (security finding C5) ───────────────────────────────────────────────────
+# The mount env (VEXA_MOUNTS / VEXA_WORKSPACE_MOUNT_SOURCE / ..._TARGET / VEXA_WORKSPACE_PATH) arrives
+# in the WorkloadSpec — i.e. from the API caller. Left unchecked, a caller could bind ANY host path
+# (``/``, ``/etc``, the docker socket) or any named volume (postgres data) into a workload. So every
+# bind SOURCE must be on a SERVER-SIDE allowlist (the runtime's own env, never the request):
+#   RUNTIME_MOUNT_SOURCE_ALLOWLIST — comma-separated. Entries starting with ``/`` are host-path
+#   prefixes (a source must equal or sit under one); anything else is an exact named-volume name.
+# Empty/unset ⇒ NO request-declared bind is allowed (the fpn deployment: bots never mount anything).
+# Independently of the allowlist: no ``..`` segments, no ``:``/``,`` (Binds-string option injection),
+# container targets must be absolute, and docker/containerd sockets + core host dirs are always denied.
+ALLOWLIST_ENV = "RUNTIME_MOUNT_SOURCE_ALLOWLIST"
+
+_ALWAYS_DENIED = (
+    "/var/run/docker.sock", "/run/docker.sock", "/var/run/docker", "/run/docker",
+    "/var/run/containerd", "/run/containerd", "/var/lib/docker", "/var/lib/containerd",
+    "/proc", "/sys", "/dev", "/etc", "/boot", "/root", "/var/run", "/run",
+)
+
+
+class MountRejected(ValueError):
+    """A request-declared mount the server-side policy refuses (surfaces as HTTP 400)."""
+
+
+def mount_source_allowlist(environ: Optional[Mapping[str, str]] = None) -> list[str]:
+    raw = (environ if environ is not None else os.environ).get(ALLOWLIST_ENV, "")
+    return [e.strip() for e in raw.split(",") if e.strip()]
+
+
+def _has_traversal(p: str) -> bool:
+    return any(seg == ".." for seg in p.replace("\\", "/").split("/"))
+
+
+def _check_chars(value: str, what: str) -> None:
+    if any(c in value for c in (":", ",", "\x00", "\n", "\r")):
+        raise MountRejected(f"{what} contains a forbidden character: {value!r}")
+    if _has_traversal(value):
+        raise MountRejected(f"{what} contains a '..' segment: {value!r}")
+
+
+def _check_target(target: str, what: str) -> None:
+    _check_chars(target, what)
+    if not target.startswith("/"):
+        raise MountRejected(f"{what} must be an absolute container path: {target!r}")
+
+
+def _is_denied_host_path(path: str) -> bool:
+    n = os.path.normpath(path)
+    if n == "/":
+        return True
+    return any(n == d or n.startswith(d + "/") for d in _ALWAYS_DENIED)
+
+
+def _check_source(source: str, what: str, allow: list[str]) -> None:
+    _check_chars(source, what)
+    if source.startswith("/"):
+        if _is_denied_host_path(source):
+            raise MountRejected(f"{what} is a forbidden host path: {source!r}")
+        if not any(a.startswith("/") and not _is_denied_host_path(a) and _under(source, a) for a in allow):
+            raise MountRejected(f"{what} host path is not on {ALLOWLIST_ENV}: {source!r}")
+        return
+    if source not in [a for a in allow if not a.startswith("/")]:
+        raise MountRejected(f"{what} volume is not on {ALLOWLIST_ENV}: {source!r}")
+
+
+def validate_mount_env(env: Mapping[str, str], allowlist: Optional[list[str]] = None) -> None:
+    """Raise ``MountRejected`` unless every bind the env would produce is permitted by server policy.
+    ``allowlist`` defaults to the runtime's own ``RUNTIME_MOUNT_SOURCE_ALLOWLIST`` env."""
+    allow = mount_source_allowlist() if allowlist is None else list(allowlist)
+    src = env.get("VEXA_WORKSPACE_MOUNT_SOURCE")
+    root = env.get("VEXA_WORKSPACE_MOUNT_TARGET")
+    if root:
+        _check_target(root, "VEXA_WORKSPACE_MOUNT_TARGET")
+    if src:
+        _check_source(src, "VEXA_WORKSPACE_MOUNT_SOURCE", allow)
+    legacy = env.get("VEXA_WORKSPACE_PATH")
+    if legacy:
+        _check_target(legacy, "VEXA_WORKSPACE_PATH")
+    # A malformed VEXA_MOUNTS is ignored by mount_set (falls back to the legacy baseline, validated
+    # above) — so validating mount_set()'s view covers exactly what workspace_binds would emit.
+    for m in mount_set(env):
+        path = m.get("path")
+        if not isinstance(path, str):
+            raise MountRejected("mount path must be a string")
+        _check_target(path, "mount path")
+        source = m.get("source")
+        if source is not None and not isinstance(source, str):
+            raise MountRejected("mount source must be a string")
+        if source:
+            _check_source(source, "mount source", allow)
+        elif not (root and _under(path, root)):
+            # out-of-store mount with no source: workspace_binds binds path→path, i.e. a HOST path
+            _check_source(path, "mount path (used as host source)", allow)
+
+
 def workspace_binds(env: Mapping[str, str]) -> list[MountBind]:
     """The ordered binds a backend must materialize for one dispatch — one bind PER MOUNT in the set,
     so the container's filesystem physically contains ONLY the dispatch's declared workspaces: another
@@ -72,6 +166,7 @@ def workspace_binds(env: Mapping[str, str]) -> list[MountBind]:
     named-volume store rides ``volume_subpath`` (docker ``VolumeOptions.Subpath`` — REQUIRES engine
     ≥ v26; older engines fail the container create loudly). Read-only roles bind ``:ro`` — enforced.
     De-duplicated, order-preserving."""
+    validate_mount_env(env)  # C5: refuse request-declared host paths / foreign volumes / the socket
     binds: list[MountBind] = []
     seen: set[tuple[str, str]] = set()
 

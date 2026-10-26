@@ -936,6 +936,15 @@ class SqlAlchemyMeetingRepo:
             return _row_to_dict(m)
 
 
+def runtime_auth_headers(env=None) -> dict:
+    """The runtime control plane's bearer (security finding C5): the runtime refuses every route
+    but /health without ``Authorization: Bearer $RUNTIME_API_TOKEN``. Set on the shared httpx
+    client, so every create/get/delete call carries it. Unset → no header (the runtime then
+    answers 503/401 and spawns fail loudly — never an open control plane)."""
+    token = ((env if env is not None else os.environ).get("RUNTIME_API_TOKEN") or "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 class HttpRuntimeClient:
     """``RuntimeClient`` over the runtime.v1 HTTP kernel (``POST /workloads``). 429 → QuotaExceeded;
     non-201 → SpawnFailed (parent ``_spawn_via_runtime_api``)."""
@@ -1010,5 +1019,5 @@ def build_production_router(*, database_url: Optional[str] = None, runtime_api_u
 
     engine = build_engine(database_url)  # #635: env-steered pool
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    http = httpx.AsyncClient(timeout=30.0)
+    http = httpx.AsyncClient(timeout=30.0, headers=runtime_auth_headers())
     return build_router(SqlAlchemyMeetingRepo(session_factory), HttpRuntimeClient(http, runtime_api_url))

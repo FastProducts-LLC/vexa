@@ -287,28 +287,37 @@ class GitHubVcs(VcsPort):
         return push_with_token(work, remote_url, ref, brokered.reveal(), remote=_PUSH_REMOTE)
 
 
+def _runtime_auth(token: str) -> dict[str, str]:
+    """``Authorization: Bearer <RUNTIME_API_TOKEN>`` — the runtime control plane refuses every route
+    but /health without it (security finding C5). Empty token → no header (the runtime then 503s)."""
+    token = (token or "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 class RuntimeHttpClient(RuntimePort):
     """A ``RuntimePort`` over runtime.v1's HTTP surface (``POST /workloads``) — the control-plane→kernel
     edge. agent-api never runs a worker in-process (P7); it asks the runtime kernel to spawn the
     ``agent`` workload. Uses stdlib urllib (no extra dep); the spec body is the runtime.v1 WorkloadSpec.
     """
 
-    def __init__(self, base_url: str, *, timeout: float = 10.0) -> None:
+    def __init__(self, base_url: str, *, timeout: float = 10.0, auth_token: str = "") -> None:
         self._base = base_url.rstrip("/")
         self._timeout = timeout
+        self._auth = _runtime_auth(auth_token)
 
     def spawn(self, workload_id: str, profile: str, env: dict[str, str]) -> str:
         body = json.dumps({"workloadId": workload_id, "profile": profile, "env": env}).encode()
         req = urllib.request.Request(
             f"{self._base}/workloads", data=body,
-            headers={"Content-Type": "application/json"}, method="POST",
+            headers={"Content-Type": "application/json", **self._auth}, method="POST",
         )
         with urllib.request.urlopen(req, timeout=self._timeout) as r:
             status = json.loads(r.read())
         return status.get("workloadId", workload_id)
 
     def await_done(self, workload_id: str, timeout_sec: float = 0.0) -> str:
-        req = urllib.request.Request(f"{self._base}/workloads/{workload_id}", method="GET")
+        req = urllib.request.Request(f"{self._base}/workloads/{workload_id}", headers=dict(self._auth),
+                                     method="GET")
         with urllib.request.urlopen(req, timeout=self._timeout) as r:
             status = json.loads(r.read())
         return status.get("state", "unknown")
@@ -416,9 +425,12 @@ class SchedulerHttpClient(SchedulerPort):
     edge. agent-api authors routine jobs here; the runtime owns the durable cron. Stdlib urllib, no dep."""
 
     def __init__(self, base_url: str, *, timeout: float = 10.0,
-                 request_headers: dict[str, str] | None = None) -> None:
+                 request_headers: dict[str, str] | None = None, auth_token: str = "") -> None:
         self._base = base_url.rstrip("/")
         self._timeout = timeout
+        # Our OWN bearer to the runtime's /schedule surface (C5) — distinct from request_headers,
+        # which ride INSIDE each job and are sent by the runtime when the job fires.
+        self._auth = _runtime_auth(auth_token)
         # Headers stamped onto every job's fire request — the internal-tier secret agent-api's
         # /invocations sink requires (it is internal-only; the runtime fires it on the routine's behalf).
         self._request_headers = dict(request_headers or {})
@@ -431,19 +443,20 @@ class SchedulerHttpClient(SchedulerPort):
         body = json.dumps(job).encode()
         req = urllib.request.Request(
             f"{self._base}/schedule", data=body,
-            headers={"Content-Type": "application/json"}, method="POST",
+            headers={"Content-Type": "application/json", **self._auth}, method="POST",
         )
         with urllib.request.urlopen(req, timeout=self._timeout) as r:
             return json.loads(r.read())
 
     def list_jobs(self, *, status: str | None = None, limit: int = 50) -> list[dict]:
         q = f"?limit={limit}" + (f"&status={status}" if status else "")
-        req = urllib.request.Request(f"{self._base}/schedule{q}", method="GET")
+        req = urllib.request.Request(f"{self._base}/schedule{q}", headers=dict(self._auth), method="GET")
         with urllib.request.urlopen(req, timeout=self._timeout) as r:
             return json.loads(r.read())
 
     def cancel_job(self, job_id: str) -> dict | None:
-        req = urllib.request.Request(f"{self._base}/schedule/{job_id}", method="DELETE")
+        req = urllib.request.Request(f"{self._base}/schedule/{job_id}", headers=dict(self._auth),
+                                     method="DELETE")
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as r:
                 return json.loads(r.read())

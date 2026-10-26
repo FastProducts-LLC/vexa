@@ -74,6 +74,11 @@ spec:
             # Mirrors compose (docker-compose.yml ADMIN_API_URL=http://admin-api:8001).
             - name: ADMIN_API_URL
               value: "http://{{ include "vexa.componentName" (list . "admin-api") }}:{{ .Values.adminApi.service.port }}"
+            - name: RUNTIME_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vexa.adminTokenSecretName" . }}
+                  key: RUNTIME_API_TOKEN
             - name: INTERNAL_API_SECRET
               valueFrom:
                 secretKeyRef:

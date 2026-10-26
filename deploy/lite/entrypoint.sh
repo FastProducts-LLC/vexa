@@ -48,6 +48,16 @@ export BOT_SPEAKER_CONFIRM_THRESHOLD="${BOT_SPEAKER_CONFIRM_THRESHOLD:-}"
 export BOT_SPEAKER_MAX_BUFFER_SEC="${BOT_SPEAKER_MAX_BUFFER_SEC:-}"
 export BOT_SPEAKER_IDLE_TIMEOUT_SEC="${BOT_SPEAKER_IDLE_TIMEOUT_SEC:-}"
 
+# C5: the runtime control-plane bearer. The runtime fails closed without it and meeting-api refuses to
+# boot without it, so lite generates a random per-boot value when the operator sets none. All three
+# consumers (runtime, meeting-api, agent-api) run in this one container and inherit the same env.
+if [ -z "${RUNTIME_API_TOKEN:-}" ]; then
+    RUNTIME_API_TOKEN="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    [ -n "$RUNTIME_API_TOKEN" ] || { echo "FATAL: could not generate RUNTIME_API_TOKEN"; exit 1; }
+    echo "  - RUNTIME_API_TOKEN: generated for this boot"
+fi
+export RUNTIME_API_TOKEN
+
 export TRANSCRIPTION_SERVICE_URL="${TRANSCRIPTION_SERVICE_URL:-}"
 export TRANSCRIPTION_SERVICE_TOKEN="${TRANSCRIPTION_SERVICE_TOKEN:-}"
 # STT model id for validating backends (Groq/vLLM); empty → whisper-1.
