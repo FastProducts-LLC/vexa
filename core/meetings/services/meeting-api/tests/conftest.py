@@ -27,7 +27,9 @@ def _stt_configured(monkeypatch):
 def _dev_mode_identity_edge(monkeypatch):
     """The suite drives routes with a bare ``x-user-id`` (the gateway hop is out of scope here), so it
     runs as a DEV_MODE deployment with no INTERNAL_API_SECRET — the gateway trust edge is open. The edge
-    itself (marker required, fail-closed) is pinned in tests/test_internal_auth.py."""
+    itself (marker required, fail-closed) is pinned in tests/test_internal_auth.py. The same DEV_MODE
+    opens the C4 callback edges (callback_auth.py: the bot lifecycle callback + the runtime callback),
+    which tests/test_callback_auth.py pins closed explicitly."""
     monkeypatch.setenv("DEV_MODE", "true")
     monkeypatch.delenv("INTERNAL_API_SECRET", raising=False)
 
