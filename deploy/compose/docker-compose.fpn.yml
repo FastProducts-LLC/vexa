@@ -189,9 +189,10 @@ services:
     mem_limit: 128m
     pids_limit: 64
     logging: *fpn-logging
-    # Internal only: the spawned bots reach it over the compose network (runtime attaches them to
-    # ${COMPOSE_PROJECT_NAME}_vexa via DOCKER_NETWORK). No host port, not on fpn_backend.
-    networks: [vexa]
+    # Internal only: the spawned bots reach it over the WORKLOADS network (runtime attaches them to
+    # ${COMPOSE_PROJECT_NAME}_bots via DOCKER_NETWORK — C4 split), meeting-api over `vexa`. No host
+    # port, not on fpn_backend.
+    networks: [vexa, bots]
     restart: unless-stopped
 
   stt-hosted:
@@ -224,8 +225,8 @@ services:
     mem_limit: 128m
     pids_limit: 64
     logging: *fpn-logging
-    # Internal only, same posture as tts-cartesia: bots reach it over the compose network.
-    networks: [vexa]
+    # Internal only, same posture as tts-cartesia: bots reach it over the workloads network (C4).
+    networks: [vexa, bots]
     restart: unless-stopped
 
   # ── disabled in the fpn deployment (profiles keep them out of `up`) ─────────────────────────────

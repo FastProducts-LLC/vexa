@@ -12,15 +12,23 @@ services:
   # ─── Infrastructure ───────────────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    # C4: the store is password-protected. Every consumer (runtime, agent-api, meeting-api, gateway,
+    # spawned bots + agent workers via the URLs the control plane hands them) connects with
+    # redis://:${REDIS_PASSWORD}@redis:6379/0. REQUIRED, no default — an unauthenticated store on a
+    # network that also carries workloads let any container read/alter every stream and session.
+    # Use URL-safe characters only (`openssl rand -hex 32`): the value is embedded in a URL.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}"]
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 5
     volumes:
       - redis-data:/data
-    networks: [vexa]
+    # On BOTH networks: the control plane (vexa) and the workloads (bots) each need the streams.
+    networks: [vexa, bots]
     restart: unless-stopped
 
   postgres:
@@ -29,7 +37,7 @@ services:
     environment:
       - POSTGRES_DB=${DB_NAME:-vexa}
       - POSTGRES_USER=${DB_USER:-postgres}
-      - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set in deploy/compose/.env}
       # The backend operates only UTC time. Pin the DB clock to UTC so func.now()/server_default/
       # onupdate (the naive timestamp columns' server-side values, main's pattern) are guaranteed UTC.
       - TZ=UTC
@@ -51,7 +59,7 @@ services:
     command: server /data --console-address ":9001"
     environment:
       - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-vexa-access-key}
-      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-vexa-secret-key}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be set in deploy/compose/.env}
     ports:
       - "127.0.0.1:${MINIO_HOST_PORT:-9000}:9000"
       - "127.0.0.1:${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
@@ -74,12 +82,12 @@ services:
       - /bin/sh
       - -c
       - |
-        mc alias set vexa http://minio:9000 $${MINIO_ROOT_USER:-vexa-access-key} $${MINIO_ROOT_PASSWORD:-vexa-secret-key}
+        mc alias set vexa http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"
         mc mb --ignore-existing vexa/${MINIO_BUCKET:-vexa}
         exit 0
     environment:
       - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-vexa-access-key}
-      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-vexa-secret-key}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be set in deploy/compose/.env}
     networks: [vexa]
 
   # ─── Core services ────────────────────────────────────────────────────────────────────────────
@@ -95,9 +103,9 @@ services:
       - DB_PORT=5432
       - DB_NAME=${DB_NAME:-vexa}
       - DB_USER=${DB_USER:-postgres}
-      - DB_PASSWORD=${DB_PASSWORD:-postgres}
-      - ADMIN_API_TOKEN=${ADMIN_TOKEN:-changeme}
-      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:-vexa-internal-secret}
+      - DB_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set in deploy/compose/.env}
+      - ADMIN_API_TOKEN=${ADMIN_TOKEN:?ADMIN_TOKEN must be set in deploy/compose/.env}
+      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set in deploy/compose/.env}
       - LOG_LEVEL=${LOG_LEVEL:-info}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health').status==200 else 1)"]
@@ -138,7 +146,7 @@ services:
       - AGENT_IMAGE=${AGENT_IMAGE:-vexaai/v012-agent-api:${IMAGE_TAG:-dev}}
       - AGENT_WORKER_IMAGE=${AGENT_WORKER_IMAGE:-vexaai/v012-agent-worker:${IMAGE_TAG:-dev}}
       - VEXA_AGENT_SRC_MOUNT=${VEXA_AGENT_SRC_MOUNT:-}
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}@redis:6379/0
       # The Runtime brokers model credentials into spawned agents. Subscription credentials may be
       # mounted from the host; API-style Anthropic/OpenRouter env is forwarded from this trusted service.
       - HOST_CLAUDE_CREDENTIALS=${HOST_CLAUDE_CREDENTIALS:-}
@@ -149,6 +157,8 @@ services:
       - ANTHROPIC_DEFAULT_OPUS_MODEL=${ANTHROPIC_DEFAULT_OPUS_MODEL:-}
       - ANTHROPIC_DEFAULT_SONNET_MODEL=${ANTHROPIC_DEFAULT_SONNET_MODEL:-}
       - ANTHROPIC_DEFAULT_HAIKU_MODEL=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}
+      # C4: also stamped as X-Internal-Secret on every RuntimeEvent callback the kernel posts to
+      # meeting-api /runtime/callback (which refuses callbacks without it outside DEV_MODE).
       - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set}
       # Control-plane bearer (security finding C5): every route but /health requires
       # `Authorization: Bearer $RUNTIME_API_TOKEN`; unset → the runtime fails closed (503). The SAME
@@ -161,9 +171,14 @@ services:
       # always refused. Default = the agent workspace store volume + the optional _global host dir.
       - RUNTIME_MOUNT_SOURCE_ALLOWLIST=${RUNTIME_MOUNT_SOURCE_ALLOWLIST:-${COMPOSE_PROJECT_NAME:-vexa-v012}_agent-workspaces,${VEXA_GLOBAL_SYSTEM_WORKSPACE_PATH:-}}
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      # Spawn the bot onto THIS compose network so it resolves meeting-api:8080 (lifecycle callback)
-      # + redis. Must equal the project-prefixed network name (DockerBackend → HostConfig.NetworkMode).
-      - DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-vexa-v012}_vexa
+      # Spawn every workload (meeting bots, agent workers) onto the WORKLOADS network (`bots`): it
+      # carries only what a workload needs — meeting-api:8080 (lifecycle callback / uploads), redis,
+      # and on fpn the stt-hosted / tts-cartesia shims — and NOT the runtime (Docker socket),
+      # postgres, minio, admin-api, agent-api or the gateway (C4 network split). Must equal the
+      # project-prefixed network name (DockerBackend → HostConfig.NetworkMode); it is ALSO the
+      # discriminator the runtime re-adopts live workloads by after a restart, so change it only
+      # in a bot-free window (see README).
+      - DOCKER_NETWORK=${COMPOSE_PROJECT_NAME:-vexa-v012}_bots
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       # Mirror of HOST_CLAUDE_CREDENTIALS (a DOCKER-HOST path — see .env.example) into THIS container,
@@ -228,7 +243,7 @@ services:
       # Lane M: the users.data.memberships[] index mirror over the admin-api internal edge
       # (policy/members.json in the workspace git repo stays authoritative; this is the listing cache).
       - VEXA_ADMIN_API_URL=http://admin-api:8001
-      - VEXA_INTERNAL_API_SECRET=${INTERNAL_API_SECRET:-vexa-internal-secret}
+      - VEXA_INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set in deploy/compose/.env}
       # Identity (P20): agent-api derives the subject from the gateway-injected X-User-Id, honored ONLY with
       # the gateway's X-Gateway-Verified marker (== INTERNAL_API_SECRET); anything else is 401, and the
       # internal sinks (/invocations, /events) need X-Internal-Secret. The single-user fallback subject is
@@ -248,7 +263,7 @@ services:
       - ANTHROPIC_DEFAULT_HAIKU_MODEL=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}
       - VEXA_LOG_LEVEL=${LOG_LEVEL:-info}
       # Stream primitive — the per-dispatch redis Streams the control plane relays (unit:<id>:out → SSE).
-      - VEXA_REDIS_URL=redis://redis:6379/0
+      - VEXA_REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}@redis:6379/0
       # The backing the Runtime binds into the worker as the workspace store (the project-prefixed volume).
       - VEXA_WORKSPACE_MOUNT_SOURCE=${COMPOSE_PROJECT_NAME:-vexa-v012}_agent-workspaces
       # Three-tier mount stack (AMENDMENT 4): the platform-owned GLOBAL SYSTEM workspace (_global) mounted
@@ -257,7 +272,7 @@ services:
       - VEXA_GLOBAL_SYSTEM_WORKSPACE_PATH=${VEXA_GLOBAL_SYSTEM_WORKSPACE_PATH:-}
       - VEXA_GLOBAL_SYSTEM_WORKSPACE_REF=${VEXA_GLOBAL_SYSTEM_WORKSPACE_REF:-}
       # The shared key the control plane signs per-dispatch tokens with (dev tier; k8s → SPIRE).
-      - VEXA_DISPATCH_SIGNING_KEY=${VEXA_DISPATCH_SIGNING_KEY:-dev-dispatch-signing-key}
+      - VEXA_DISPATCH_SIGNING_KEY=${VEXA_DISPATCH_SIGNING_KEY:?VEXA_DISPATCH_SIGNING_KEY must be set in deploy/compose/.env}
       # 'Add bot from URL' (terminal): agent-api forwards POST /api/meeting/bot → the gateway POST /bots.
       - VEXA_GATEWAY_URL=http://gateway:8000
       - VEXA_BOT_API_KEY=${VEXA_BOT_API_KEY:-}
@@ -297,12 +312,12 @@ services:
       - DB_PORT=5432
       - DB_NAME=${DB_NAME:-vexa}
       - DB_USER=${DB_USER:-postgres}
-      - DB_PASSWORD=${DB_PASSWORD:-postgres}
-      - REDIS_URL=redis://redis:6379/0
+      - DB_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set in deploy/compose/.env}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}@redis:6379/0
       - RUNTIME_API_URL=http://runtime:8090
       # C5: bearer for the runtime control plane — must equal the runtime's RUNTIME_API_TOKEN.
       - RUNTIME_API_TOKEN=${RUNTIME_API_TOKEN:?RUNTIME_API_TOKEN must be set}
-      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:-vexa-internal-secret}
+      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set in deploy/compose/.env}
       # The background sweeps' internal lookups: auto-join fetches per-user spawn context
       # (/internal/users/{id}/bot-context) and calendar sync discovers connected ICS feeds
       # (/internal/calendar-configs). Unset -> calendar sync no-ops, auto-join spawns uncapped.
@@ -310,7 +325,7 @@ services:
       # MeetingToken is signed (mint) AND verified (recordings upload) with ADMIN_TOKEN — the SAME
       # admin secret admin-api holds (admin-api gets ADMIN_API_TOKEN=${ADMIN_TOKEN}). Exactly like
       # main (meeting-api ADMIN_TOKEN = admin-api ADMIN_API_TOKEN). __main__ passes token_secret=ADMIN_TOKEN.
-      - ADMIN_TOKEN=${ADMIN_TOKEN:-changeme}
+      - ADMIN_TOKEN=${ADMIN_TOKEN:?ADMIN_TOKEN must be set in deploy/compose/.env}
       # STT the spawned bot transcribes with — bot_spawn threads these into the invocation (registry
       # `stt` resource; the funded internal@vexa.ai token). Unset → bot joins+captures but no transcript.
       - TRANSCRIPTION_SERVICE_URL=${TRANSCRIPTION_SERVICE_URL:-}
@@ -322,7 +337,7 @@ services:
       - RECORDING_ENABLED=${RECORDING_ENABLED:-true}
       - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-vexa-access-key}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-vexa-secret-key}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be set in deploy/compose/.env}
       - MINIO_BUCKET=${MINIO_BUCKET:-vexa}
       - MINIO_SECURE=${MINIO_SECURE:-false}
       - LOG_LEVEL=${LOG_LEVEL:-info}
@@ -345,7 +360,9 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
-    networks: [vexa]
+    # On BOTH networks: the bot's lifecycle callback + recording/signal uploads arrive over `bots`;
+    # the gateway, runtime and admin-api edges stay on `vexa`.
+    networks: [vexa, bots]
     restart: unless-stopped
 
   gateway:
@@ -358,8 +375,8 @@ services:
     environment:
       - ADMIN_API_URL=http://admin-api:8001
       - MEETING_API_URL=http://meeting-api:8080
-      - REDIS_URL=redis://redis:6379/0
-      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:-vexa-internal-secret}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}@redis:6379/0
+      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set in deploy/compose/.env}
       - LOG_LEVEL=${LOG_LEVEL:-info}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
@@ -437,18 +454,18 @@ services:
       - AGENT_API_URL=http://agent-api:8100
       - VEXA_ADMIN_API_URL=http://admin-api:8001
       - VEXA_API_URL=http://gateway:8000
-      - VEXA_ADMIN_API_KEY=${ADMIN_TOKEN:-changeme}
+      - VEXA_ADMIN_API_KEY=${ADMIN_TOKEN:?ADMIN_TOKEN must be set in deploy/compose/.env}
       - VEXA_BOT_API_KEY=${VEXA_BOT_API_KEY:-}
       # Hidden admin panel (/api/admin/*): comma-separated email allowlist — EMPTY = the panel is off
       # for everyone. Identity is VERIFIED against admin-api /internal/validate over the internal-tier
       # secret (never trusted from a cookie), and the same secret fronts agent-api's admin overview.
       - VEXA_ADMIN_EMAILS=${VEXA_ADMIN_EMAILS:-}
-      - VEXA_INTERNAL_API_SECRET=${INTERNAL_API_SECRET:-vexa-internal-secret}
+      - VEXA_INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set in deploy/compose/.env}
       # Composer mic dictation (/api/stt) — same STT service the meeting pipeline uses; token stays
       # server-side. Empty → the mic button reports "not configured" instead of failing silently.
       - TRANSCRIPTION_SERVICE_URL=${TRANSCRIPTION_SERVICE_URL:-}
       - TRANSCRIPTION_SERVICE_TOKEN=${TRANSCRIPTION_SERVICE_TOKEN:-}
-      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-dev-nextauth-secret}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:?NEXTAUTH_SECRET must be set in deploy/compose/.env}
       # Public origin when self-hosting behind a domain/reverse-proxy (e.g. https://vexa.example.com).
       # Empty by default (localhost). Setting an https:// value also flips auth cookies to Secure.
       - NEXTAUTH_URL=${NEXTAUTH_URL:-}
@@ -485,5 +502,13 @@ volumes:
   agent-workspaces:
 
 networks:
+  # Control plane: every long-running service. The runtime (Docker socket), postgres, minio,
+  # admin-api, agent-api and the gateway live ONLY here.
   vexa:
+    driver: bridge
+  # Workloads: what the runtime spawns (meeting bots, agent workers) via DOCKER_NETWORK. Carries
+  # redis + meeting-api (+ the fpn STT/TTS shims) only — a compromised bot cannot reach the runtime
+  # API, the databases or the identity plane. Internet egress stays (bots join meetings; workers
+  # call model APIs).
+  bots:
     driver: bridge
