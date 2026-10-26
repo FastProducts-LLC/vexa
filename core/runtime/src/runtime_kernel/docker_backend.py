@@ -93,8 +93,12 @@ def _in_stack_network(network: Optional[str], inspect_body: dict) -> bool:
 
 
 def _socket_url() -> str:
-    """Encode DOCKER_HOST (unix:///var/run/docker.sock) as a requests_unixsocket http+unix URL."""
+    """Adapt DOCKER_HOST for requests, retaining http+unix for Unix socket transport."""
     raw = os.getenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+    if raw.startswith("tcp://"):
+        return f"http://{raw[len('tcp://'):].rstrip('/')}"
+    if raw.startswith(("http://", "https://")):
+        return raw
     path = raw.split("//", 1)[1] if "//" in raw else "/var/run/docker.sock"
     if not path.startswith("/"):
         path = f"/{path}"
