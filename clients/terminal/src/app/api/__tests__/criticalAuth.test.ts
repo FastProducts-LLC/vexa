@@ -14,7 +14,7 @@ vi.mock("next/headers", () => ({
 import { POST as loginRoute } from "../auth/login/route";
 import { POST as sttRoute } from "../stt/route";
 
-const ENV_KEYS = ["VEXA_ALLOW_DIRECT_LOGIN", "VEXA_ADMIN_API_URL", "VEXA_ADMIN_API_KEY", "VEXA_INTERNAL_API_SECRET",
+const ENV_KEYS = ["VEXA_ALLOW_DIRECT_LOGIN", "VEXA_TERMINAL_DEV_LOGIN", "VEXA_TERMINAL_DEV_LOGIN_EMAILS", "VEXA_ADMIN_API_URL", "VEXA_ADMIN_API_KEY", "VEXA_INTERNAL_API_SECRET",
   "TRANSCRIPTION_SERVICE_URL", "TRANSCRIPTION_SERVICE_TOKEN", "VEXA_API_KEY", "VEXA_BOT_API_KEY",
   "VEXA_ALLOW_SHARED_API_KEY", "VEXA_ADMIN_EMAILS"];
 
@@ -45,8 +45,22 @@ describe("POST /api/auth/login (direct email login)", () => {
     expect(jar["vexa-token"]).toBeUndefined();
   });
 
-  it("works only with the explicit VEXA_ALLOW_DIRECT_LOGIN=true opt-in", async () => {
-    process.env.VEXA_ALLOW_DIRECT_LOGIN = "true";
+  it("C6: an email merely containing \"test\" gets nothing, even with the dev flag on", async () => {
+    process.env.VEXA_TERMINAL_DEV_LOGIN = "1";
+    process.env.VEXA_TERMINAL_DEV_LOGIN_EMAILS = "qa-test@example.com";
+    process.env.VEXA_ADMIN_API_URL = "http://admin-api";
+    process.env.VEXA_ADMIN_API_KEY = "admin-secret";
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const r = await loginRoute(jsonReq({ email: "attacker-test@evil.com" }));
+    expect(r.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(jar["vexa-token"]).toBeUndefined();
+  });
+
+  it("works only with VEXA_TERMINAL_DEV_LOGIN=1 + an exact allowlisted email", async () => {
+    process.env.VEXA_TERMINAL_DEV_LOGIN = "1";
+    process.env.VEXA_TERMINAL_DEV_LOGIN_EMAILS = "qa-test@example.com";
     process.env.VEXA_ADMIN_API_URL = "http://admin-api";
     process.env.VEXA_ADMIN_API_KEY = "admin-secret";
     process.env.VEXA_ADMIN_EMAILS = "ops@example.com"; // allowlist → no bootstrap-admin claim
