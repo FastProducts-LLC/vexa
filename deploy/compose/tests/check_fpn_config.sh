@@ -18,6 +18,7 @@ docker compose -p vexa-check --project-directory deploy/compose --env-file "$tmp
 
 python3 - "$tmp_dir/config.json" <<'PY'
 import json
+from pathlib import Path
 import sys
 
 with open(sys.argv[1]) as config_file:
@@ -43,11 +44,14 @@ check(3, "runtime has no group_add entries", not runtime.get("group_add"))
 proxy = services.get("docker-proxy", {})
 image = proxy.get("image", "")
 environment = proxy.get("environment", {})
-disabled = (
-    "EXEC VOLUMES NETWORKS BUILD SYSTEM INFO EVENTS SWARM SECRETS CONFIGS NODES "
-    "SERVICES TASKS PLUGINS DISTRIBUTION COMMIT AUTH SESSION GRPC ALLOW_RESTARTS"
-).split()
-check(4, "docker-proxy image, socket mount, ports and API permissions",
+config_mounts = [
+    volume for volume in proxy.get("volumes", [])
+    if volume.get("type") == "bind"
+    and str(volume.get("source", "")).endswith("docker-proxy/haproxy.cfg")
+    and volume.get("target") == "/usr/local/etc/haproxy/haproxy.cfg"
+    and volume.get("read_only") is True
+]
+check(4, "docker-proxy pinned image, read-only mounts, hardening and no section flags",
       "docker-proxy" in services
       and image.startswith(("tecnativa/docker-socket-proxy:",
                             "ghcr.io/tecnativa/docker-socket-proxy:"))
@@ -57,19 +61,23 @@ check(4, "docker-proxy image, socket mount, ports and API permissions",
               and volume.get("target") == "/var/run/docker.sock"
               and volume.get("read_only") is True
               for volume in proxy.get("volumes", []))
+      and len(config_mounts) == 1
       and not proxy.get("ports")
-      and all(str(environment.get(key)) == "1"
-              for key in ("CONTAINERS", "IMAGES", "POST", "DELETE"))
-      and all(key not in environment or str(environment[key]) == "0" for key in disabled)
-      and all(key not in environment or str(environment[key]) == "1"
-              for key in ("ALLOW_START", "ALLOW_STOP")))
+      and proxy.get("read_only") is True
+      and "no-new-privileges:true" in proxy.get("security_opt", [])
+      and "ALL" in proxy.get("cap_drop", [])
+      and not any(key in environment for key in ("CONTAINERS", "IMAGES", "POST", "EXEC")))
 
 proxy_networks = set(proxy.get("networks", {}))
 runtime_networks = set(runtime.get("networks", {}))
 check(5, "docker-proxy has only one network, shared with runtime",
       len(proxy_networks) == 1 and len(proxy_networks & runtime_networks) == 1)
-check(6, "docker-proxy prevents privilege escalation and is not privileged",
-      "no-new-privileges:true" in proxy.get("security_opt", [])
-      and not proxy.get("privileged", False))
+config_path = Path(config_mounts[0]["source"]).resolve()
+repo_root = Path.cwd().resolve()
+in_repo = repo_root in config_path.parents
+config_text = config_path.read_text() if in_repo and config_path.is_file() else ""
+check(6, "repo HAProxy config exists, denies requests and has no template placeholders",
+      in_repo and config_path.is_file()
+      and "http-request deny" in config_text and "${" not in config_text)
 print("CHECK-FPN-CONFIG OK")
 PY
