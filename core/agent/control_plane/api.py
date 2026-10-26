@@ -1150,7 +1150,8 @@ def create_app(
 
         overview: dict = {"workloads": [], "meetings": []}
         try:
-            overview["workloads"] = admin_panel.fetch_workloads(settings.runtime_api_url)
+            overview["workloads"] = admin_panel.fetch_workloads(
+                settings.runtime_api_url, auth_token=settings.runtime_api_token.get_secret_value())
         except Exception as e:  # noqa: BLE001 — typed partial failure (P18): the panel shows the section error
             overview["workloads_error"] = f"{type(e).__name__}: {e}"
         if redis_url:
@@ -1189,7 +1190,8 @@ def create_app(
         # Workloads cross-check the in-memory live registry (a stale "live" entry must not turn
         # relay quiet into a false FAIL). Unknown (kernel unreachable) → None = trust the registry.
         try:
-            workloads = admin_panel.fetch_workloads(settings.runtime_api_url)
+            workloads = admin_panel.fetch_workloads(
+                settings.runtime_api_url, auth_token=settings.runtime_api_token.get_secret_value())
         except Exception:  # noqa: BLE001
             workloads = None
         return admin_panel.run_probe(settings, r, live.list(), relay_health=_txw.relay_health(),
@@ -2393,10 +2395,12 @@ def _build_production_app() -> FastAPI:
     preflight()
 
     settings = load_settings()
-    runtime = RuntimeHttpClient(settings.runtime_api_url)
+    _rtoken = settings.runtime_api_token.get_secret_value()
+    runtime = RuntimeHttpClient(settings.runtime_api_url, auth_token=_rtoken)
     _isecret = settings.internal_api_secret.get_secret_value()
     scheduler = SchedulerHttpClient(
         settings.runtime_api_url,
+        auth_token=_rtoken,
         # The routine fire hits the internal-only /invocations sink → carry the internal-tier secret.
         request_headers={"X-Internal-Secret": _isecret} if _isecret else None,
     )

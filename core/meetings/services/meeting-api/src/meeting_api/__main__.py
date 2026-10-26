@@ -65,6 +65,9 @@ _KNOWN_DEFAULT_SECRETS = {
     "INTERNAL_API_SECRET": {"vexa-internal-secret"},
     "DB_PASSWORD": {"postgres"},
     "MINIO_SECRET_KEY": {"vexa-secret-key"},
+    # C5: the runtime control-plane bearer. UNSET counts too — without it every spawn is refused by
+    # the fail-closed runtime, so a production boot refuses instead of 503-ing every POST /bots.
+    "RUNTIME_API_TOKEN": {"", "vexa-runtime-dev-token"},
 }
 
 
@@ -91,8 +94,8 @@ def _reject_default_secrets(env: "os._Environ | dict | None" = None) -> None:
     )
     if bad:
         raise ConfigError(
-            "meeting-api refuses to boot — these secrets are still set to a published default "
-            f"value: {', '.join(bad)}. Set real values (or DEV_MODE=true for local development only)."
+            "meeting-api refuses to boot — these secrets are unset or still set to a published "
+            f"default value: {', '.join(bad)}. Set real values (or DEV_MODE=true for local development only)."
         )
 
 
@@ -104,7 +107,7 @@ def build_production_app():
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from . import create_app
-    from .bot_spawn.adapters import HttpRuntimeClient, SqlAlchemyMeetingRepo
+    from .bot_spawn.adapters import HttpRuntimeClient, SqlAlchemyMeetingRepo, runtime_auth_headers
     from .collector.adapters import RedisStreamBus, SqlAlchemyTranscriptStore
     from .recordings.adapters import S3Storage, SqlAlchemyRecordingRepo
 
@@ -127,7 +130,8 @@ def build_production_app():
 
     import httpx
 
-    runtime_http = httpx.AsyncClient(timeout=30.0)
+    # C5: the runtime requires a bearer on every control-plane route (RUNTIME_API_TOKEN, shared).
+    runtime_http = httpx.AsyncClient(timeout=30.0, headers=runtime_auth_headers())
     runtime_client = HttpRuntimeClient(runtime_http, runtime_api_url)
 
     recording_repo = SqlAlchemyRecordingRepo(session_factory)

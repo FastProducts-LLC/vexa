@@ -19,7 +19,7 @@ from urllib.parse import quote
 import requests_unixsocket
 
 from .backend import WorkloadHandle
-from .mounts import workspace_binds
+from .mounts import validate_mount_env, workspace_binds
 from .profiles import Runnable
 
 MANAGED_LABEL = "runtime.managed"
@@ -112,8 +112,37 @@ def _shm_bytes() -> Optional[int]:
         return None
 
 
+_SOCKET_PATHS = ("/var/run/docker.sock", "/run/docker.sock", "/var/run/containerd", "/run/containerd")
+_FORBIDDEN_HOST_CONFIG = ("Privileged", "CapAdd", "PidMode", "IpcMode", "UTSMode", "UsernsMode",
+                          "Devices", "SecurityOpt", "CgroupParent")
+
+
+def _assert_safe_host_config(host_config: dict[str, Any]) -> None:
+    """Defense in depth (C5): whatever path built ``host_config``, a workload is never privileged,
+    never on the host network/pid/ipc namespaces, and never gets a container-runtime socket."""
+    for key in _FORBIDDEN_HOST_CONFIG:
+        if host_config.get(key):
+            raise ValueError(f"refusing to spawn a workload with HostConfig.{key}")
+    if str(host_config.get("NetworkMode", "")).lower() in ("host", "container") or str(
+        host_config.get("NetworkMode", "")
+    ).lower().startswith("container:"):
+        raise ValueError("refusing to spawn a workload on the host/another container's network")
+    sources = [b.split(":", 1)[0] for b in host_config.get("Binds") or []]
+    sources += [m.get("Source", "") for m in host_config.get("Mounts") or []]
+    for src in sources:
+        n = os.path.normpath(src) if src.startswith("/") else src
+        if any(n == p or n.startswith(p + "/") for p in _SOCKET_PATHS):
+            raise ValueError(f"refusing to mount a container-runtime socket into a workload: {src}")
+
+
 class DockerBackend:
     name = "docker"
+
+    @staticmethod
+    def validate_env(env: dict[str, str]) -> None:
+        """API-time spec check (raises ValueError → HTTP 400): the request-declared mount set must
+        pass the server-side mount policy (``RUNTIME_MOUNT_SOURCE_ALLOWLIST``)."""
+        validate_mount_env(env)
 
     def __init__(self, name_prefix: str = "vexa-") -> None:
         self._prefix = name_prefix
@@ -246,6 +275,7 @@ class DockerBackend:
             if value and key not in spawn_env:
                 spawn_env[key] = value
 
+        _assert_safe_host_config(host_config)
         payload: dict[str, Any] = {
             "Image": runnable.image,
             "Env": [f"{k}={v}" for k, v in spawn_env.items()],

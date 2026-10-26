@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # The agent worker is spawned via runtime.v1 under this opaque profile (P11); routine jobs are
     # registered on the same runtime's schedule.v1 surface.
     runtime_api_url: str = "http://runtime-api:8090"
+    # Bearer the runtime requires on every control-plane route but /health (security finding C5);
+    # the SAME value as the runtime's RUNTIME_API_TOKEN. Unset → the runtime refuses spawns (fail closed).
+    runtime_api_token: SecretStr = SecretStr("")
     agent_profile: str = "agent"
     # How the runtime's scheduler reaches THIS service's /invocations sink when a routine fires.
     agent_api_self_url: str = "http://agent-api:8100"

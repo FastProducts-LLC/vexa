@@ -49,18 +49,18 @@ mkdir -p "$(dirname "$VEXA_SECRETS_FILE")"
 if [ -f "$VEXA_SECRETS_FILE" ]; then
     # Previously generated values fill ONLY what the operator left unset (operator env always wins).
     while IFS='=' read -r _k _v; do
-        case "$_k" in ADMIN_API_TOKEN|INTERNAL_API_SECRET|NEXTAUTH_SECRET|JWT_SECRET|VEXA_DISPATCH_SIGNING_KEY) ;; *) continue ;; esac
+        case "$_k" in ADMIN_API_TOKEN|INTERNAL_API_SECRET|NEXTAUTH_SECRET|JWT_SECRET|VEXA_DISPATCH_SIGNING_KEY|RUNTIME_API_TOKEN) ;; *) continue ;; esac
         [ -z "${!_k:-}" ] && export "${_k}=${_v}"
     done < "$VEXA_SECRETS_FILE"
     unset _k _v
 fi
 _insecure_default() {
     case "$1" in
-        changeme|your_admin_api_key_here|lite-internal-secret|vexa-internal-secret|vexa-lite-nextauth-secret|vexa-lite-jwt-secret|dev-nextauth-secret|dev-dispatch-signing-key) return 0 ;;
+        changeme|your_admin_api_key_here|lite-internal-secret|vexa-internal-secret|vexa-runtime-dev-token|vexa-lite-nextauth-secret|vexa-lite-jwt-secret|dev-nextauth-secret|dev-dispatch-signing-key) return 0 ;;
     esac
     return 1
 }
-for _name in ADMIN_API_TOKEN INTERNAL_API_SECRET NEXTAUTH_SECRET JWT_SECRET VEXA_DISPATCH_SIGNING_KEY; do
+for _name in ADMIN_API_TOKEN INTERNAL_API_SECRET NEXTAUTH_SECRET JWT_SECRET VEXA_DISPATCH_SIGNING_KEY RUNTIME_API_TOKEN; do
     _val="${!_name:-}"
     if [ -z "$_val" ]; then
         _val="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"

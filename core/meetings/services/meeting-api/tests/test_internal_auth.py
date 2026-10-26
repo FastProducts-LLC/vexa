@@ -105,6 +105,7 @@ GOOD = {
     "INTERNAL_API_SECRET": "i" * 32,
     "DB_PASSWORD": "d" * 32,
     "MINIO_SECRET_KEY": "m" * 32,
+    "RUNTIME_API_TOKEN": "r" * 32,
     "TRANSCRIPTION_SERVICE_URL": "",
     "TRANSCRIPTION_SERVICE_TOKEN": "",
 }
@@ -127,6 +128,7 @@ def test_boot_accepts_real_secrets():
     ("INTERNAL_API_SECRET", "vexa-internal-secret"),
     ("DB_PASSWORD", "postgres"),
     ("MINIO_SECRET_KEY", "vexa-secret-key"),
+    ("RUNTIME_API_TOKEN", "vexa-runtime-dev-token"),
 ])
 def test_boot_refuses_placeholder(key, placeholder):
     from meeting_api.config_preflight import ConfigError
@@ -136,6 +138,28 @@ def test_boot_refuses_placeholder(key, placeholder):
     assert key in str(ei.value)
     assert placeholder not in str(ei.value), "never echo the secret value"
     _boot({**GOOD, key: placeholder, "DEV_MODE": "true"})  # dev escape hatch
+
+
+def test_boot_refuses_unset_runtime_api_token():
+    """C5: the runtime fails closed without its bearer, so a production meeting-api without
+    RUNTIME_API_TOKEN would 503 every spawn — refuse to boot instead (DEV_MODE still escapes)."""
+    from meeting_api.config_preflight import ConfigError
+
+    env = {k: v for k, v in GOOD.items() if k != "RUNTIME_API_TOKEN"}
+    with pytest.raises(ConfigError, match="RUNTIME_API_TOKEN"):
+        _boot(env)
+    with pytest.raises(ConfigError, match="RUNTIME_API_TOKEN"):
+        _boot({**env, "RUNTIME_API_TOKEN": "   "})
+    _boot({**env, "DEV_MODE": "true"})
+
+
+def test_runtime_client_sends_the_bearer():
+    from meeting_api.bot_spawn.adapters import runtime_auth_headers
+
+    assert runtime_auth_headers({"RUNTIME_API_TOKEN": "tok"}) == {"Authorization": "Bearer tok"}
+    assert runtime_auth_headers({"RUNTIME_API_TOKEN": " tok \n"}) == {"Authorization": "Bearer tok"}
+    assert runtime_auth_headers({}) == {}
+    assert runtime_auth_headers({"RUNTIME_API_TOKEN": "  "}) == {}
 
 
 def test_boot_names_every_placeholder_at_once():
