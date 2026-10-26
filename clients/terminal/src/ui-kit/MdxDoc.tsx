@@ -2,19 +2,31 @@
  *
  *  Mintlify-style model: markdown + a CLOSED registry of declarative components
  *  (<Note>, <Warning>, <Card>, <CardGroup>, <Steps>/<Step>, <Tabs>/<Tab>) rendered
- *  with the terminal's design tokens. Compilation happens in the browser from the
- *  file's string content via @mdx-js/mdx (MIT) — no build step, so agent-written
- *  files render immediately after every edit.
+ *  with the terminal's design tokens. The file's string content is parsed in the
+ *  browser — no build step, so agent-written files render immediately after every edit.
+ *
+ *  NO CODE EXECUTION (security finding C3): the source is parsed to a syntax tree
+ *  (remark-parse + remark-mdx + remark-gfm), the tree is REJECTED if it carries any
+ *  executable MDX (ESM, `{expressions}`, expression-valued attributes), and the
+ *  remaining declarative tree is walked straight into React elements with
+ *  hast-util-to-jsx-runtime. Component tags resolve by NAME against the closed
+ *  registry; nothing is compiled to JavaScript and nothing goes through `eval` /
+ *  `new Function`. The terminal ships a Content-Security-Policy without
+ *  'unsafe-eval' (csp.mjs), so a regression here would fail loudly, not silently.
  *
  *  Failure containment: agent-authored MDX can be malformed (stray `<`, unbalanced
- *  braces). If compile/run throws, we fall back to the legacy <Markdown> renderer
+ *  braces). If parse/render throws, we fall back to the legacy <Markdown> renderer
  *  so the doc always displays — worst case it loses interactivity, never the page.
  */
 "use client";
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import * as runtime from "react/jsx-runtime";
-import { evaluate } from "@mdx-js/mdx";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, jsx, jsxs } from "react/jsx-runtime";
+import { unified } from "unified";
+import remarkParse from "remark-parse";
+import remarkMdx from "remark-mdx";
 import remarkGfm from "remark-gfm";
+import remarkRehype from "remark-rehype";
+import { toJsxRuntime, type Components as HastComponents } from "hast-util-to-jsx-runtime";
 import { Markdown } from "./Markdown";
 import { Icon } from "./index";
 import {
@@ -175,27 +187,64 @@ function transformWikilinks(src: string): string {
   ).join("");
 }
 
-type CompileState =
-  | { status: "loading" }
-  | { status: "ok"; Content: import("mdx/types").MDXContent }
-  | { status: "fallback"; error: string };
+// ── declarative render (no eval) ──────────────────────────────────────────────────
+// Component tags are resolved by NAME against the closed registry. hast-util-to-jsx-runtime
+// hands capitalised tag names (and nothing else, once the remark guard has run) to this
+// "evaluater" as a bare Identifier estree; anything that is not a registered name throws, and
+// an ESM program always throws. There is no path from document text to running JavaScript.
+type EstreeNode = { type: string; name?: string };
+function createRegistryEvaluater() {
+  return {
+    evaluateExpression(expression: EstreeNode): unknown {
+      if (expression.type === "Identifier" && expression.name && Object.prototype.hasOwnProperty.call(MDX_COMPONENTS, expression.name)) {
+        return MDX_COMPONENTS[expression.name as keyof typeof MDX_COMPONENTS];
+      }
+      throw new Error(expression.type === "Identifier" ? `unknown component <${expression.name}> in workspace doc` : `executable MDX (${expression.type}) is not allowed in workspace docs`);
+    },
+    evaluateProgram(): never {
+      throw new Error("executable MDX (ESM) is not allowed in workspace docs");
+    },
+  };
+}
+
+const MDX_PASS_THROUGH: Array<"mdxJsxFlowElement" | "mdxJsxTextElement" | "mdxFlowExpression" | "mdxTextExpression" | "mdxjsEsm"> = ["mdxJsxFlowElement", "mdxJsxTextElement", "mdxFlowExpression", "mdxTextExpression", "mdxjsEsm"];
+const processor = unified()
+  .use(remarkParse)
+  .use(remarkMdx)
+  .use(remarkGfm)
+  .use(remarkForbidExecutable)
+  .use(remarkRehype, { passThrough: MDX_PASS_THROUGH });
+
+/** Parse + guard + render workspace MDX to React elements WITHOUT compiling it to JavaScript.
+ *  Throws on malformed or executable input — callers route the throw to the plain-Markdown fallback. */
+export function renderWorkspaceMdx(source: string): ReactNode {
+  const mdast = processor.parse(transformWikilinks(source));
+  const hast = processor.runSync(mdast);
+  return toJsxRuntime(hast, {
+    Fragment,
+    jsx,
+    jsxs,
+    components: MDX_COMPONENTS as unknown as Partial<HastComponents>,
+    createEvaluater: createRegistryEvaluater,
+  });
+}
+
+type RenderState = { status: "ok"; content: ReactNode } | { status: "fallback"; error: string };
+
+function renderState(src: string): RenderState {
+  try {
+    return { status: "ok", content: renderWorkspaceMdx(src) };
+  } catch (err: unknown) {
+    return { status: "fallback", error: String((err as Error)?.message ?? err) };
+  }
+}
 
 /** Renders workspace markdown as MDX with the registry above; falls back to the
- *  legacy <Markdown> renderer (with a subtle notice) when the source doesn't compile. */
+ *  legacy <Markdown> renderer (with a subtle notice) when the source doesn't parse. */
 export function MdxDoc({ children, style }: { children: string; style?: CSSProperties }): ReactNode {
   const src = children ?? "";
-  const [state, setState] = useState<CompileState>({ status: "loading" });
+  const state = useMemo(() => renderState(src), [src]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setState({ status: "loading" });
-    evaluate(transformWikilinks(src), { ...runtime, remarkPlugins: [remarkGfm, remarkForbidExecutable] })
-      .then((mod) => { if (!cancelled) setState({ status: "ok", Content: mod.default }); })
-      .catch((err: unknown) => { if (!cancelled) setState({ status: "fallback", error: String((err as Error)?.message ?? err) }); });
-    return () => { cancelled = true; };
-  }, [src]);
-
-  if (state.status === "loading") return <div style={{ color: "var(--t3)", fontSize: 12, ...style }}>rendering…</div>;
   if (state.status === "fallback") {
     return (
       <div style={style}>
@@ -208,10 +257,9 @@ export function MdxDoc({ children, style }: { children: string; style?: CSSPrope
       </div>
     );
   }
-  const Content = state.Content;
   return (
     <div style={{ color: "var(--t1)", ...style }}>
-      <Content components={MDX_COMPONENTS} />
+      {state.content}
     </div>
   );
 }
