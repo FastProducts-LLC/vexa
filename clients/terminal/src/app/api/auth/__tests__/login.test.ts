@@ -21,9 +21,17 @@ beforeEach(() => {
   setCookies = [];
   process.env.VEXA_ADMIN_API_URL = "http://admin.test";
   process.env.VEXA_ADMIN_API_KEY = "admin-secret";
+  // dev login is opt-in (default 404 — see criticalAuth.test.ts); these tests exercise it ON with an
+  // exact-match allowlist. vitest runs with NODE_ENV=test, i.e. not production.
+  process.env.VEXA_TERMINAL_DEV_LOGIN = "1";
+  process.env.VEXA_TERMINAL_DEV_LOGIN_EMAILS = "test-a@b.com, Test-New@B.com";
 });
 
 afterEach(() => {
+  delete process.env.VEXA_TERMINAL_DEV_LOGIN;
+  delete process.env.VEXA_TERMINAL_DEV_LOGIN_EMAILS;
+  delete process.env.VEXA_ALLOW_DIRECT_LOGIN;
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -62,11 +70,76 @@ describe("/api/auth/login — direct email login against a mocked admin-api", ()
     expect((tok?.opts as { httpOnly?: boolean })?.httpOnly).toBe(true);
   });
 
-  it("rejects a non-test email (debug-only path) without calling admin-api", async () => {
+  it("rejects a non-allowlisted email without calling admin-api", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
     const res = await login(makeReq({ email: "real@company.com" }));
     expect(res.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // C6 regression: "contains test" used to be the whole check.
+  it.each([
+    "victim-test@company.com",
+    "test@company.com",
+    "admin@test.com",
+    "xtest-a@b.com",        // superstring of an allowlisted entry
+    "test-a@b.com.evil.io", // allowlisted entry as a prefix
+    "test-a@b.co",          // allowlisted entry minus a char
+  ])("rejects %s (no substring / prefix / domain matching) without calling admin-api", async (email) => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await login(makeReq({ email }));
+    expect(res.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(setCookies).toHaveLength(0);
+  });
+
+  it("matches the allowlist case- and whitespace-insensitively (exact address)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.includes("/admin/users/email/")) return new Response(JSON.stringify({ id: 42, email: "test-a@b.com" }), { status: 200 });
+      if (url.includes("/tokens")) return new Response(JSON.stringify({ token: "t" }), { status: 200 });
+      return new Response("nope", { status: 500 });
+    }));
+    const res = await login(makeReq({ email: "  TEST-A@B.COM " }));
+    expect(res.status).toBe(200);
+  });
+
+  it("an empty allowlist allows nobody, even with the flag on", async () => {
+    process.env.VEXA_TERMINAL_DEV_LOGIN_EMAILS = " , ";
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await login(makeReq({ email: "test-a@b.com" }));
+    expect(res.status).toBe(403);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("is 404 when NODE_ENV=production even with the flag + allowlist set", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await login(makeReq({ email: "test-a@b.com" }));
+    expect(res.status).toBe(404);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(setCookies).toHaveLength(0);
+  });
+
+  it.each(["true", "yes", "0", ""])("is 404 unless the flag is exactly \"1\" (got %j)", async (v) => {
+    process.env.VEXA_TERMINAL_DEV_LOGIN = v;
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await login(makeReq({ email: "test-a@b.com" }));
+    expect(res.status).toBe(404);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("the legacy VEXA_ALLOW_DIRECT_LOGIN=true no longer enables it", async () => {
+    delete process.env.VEXA_TERMINAL_DEV_LOGIN;
+    process.env.VEXA_ALLOW_DIRECT_LOGIN = "true";
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await login(makeReq({ email: "test-a@b.com" }));
+    expect(res.status).toBe(404);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
