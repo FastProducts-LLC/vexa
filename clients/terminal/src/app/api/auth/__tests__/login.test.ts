@@ -105,6 +105,18 @@ describe("/api/auth/login — direct email login against a mocked admin-api", ()
     expect(res.status).toBe(200);
   });
 
+  it("C6: an email merely containing \"test\" gets 403 and never reaches admin-api, even with the flag on", async () => {
+    process.env.VEXA_TERMINAL_DEV_LOGIN_EMAILS = "qa-test@example.com";
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    for (const email of ["attacker-test@evil.com", "test@bank.com", "contest@company.com", "qa-test@example.com.evil"]) {
+      const res = await login(makeReq({ email }));
+      expect(res.status).toBe(403);
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(setCookies).toHaveLength(0);
+  });
+
   it("an empty allowlist allows nobody, even with the flag on", async () => {
     process.env.VEXA_TERMINAL_DEV_LOGIN_EMAILS = " , ";
     const fetchSpy = vi.fn();
