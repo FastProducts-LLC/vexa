@@ -23,6 +23,9 @@ import urllib.error
 import urllib.request
 from typing import Callable, Optional
 
+from control_plane.model_endpoint import (ALLOW_PRIVATE_ENV, ALLOWLIST_ENV, allow_private_from_env,
+                                          endpoint_host_problem, parse_allowlist)
+
 # The compose-mounted subscription credential file (same :ro mount the runtime probes; the
 # docker backend mounts the same host path into workers at /root/.claude/.credentials.json).
 CREDS_PATH = "/var/lib/vexa/host-claude-credentials"
@@ -129,12 +132,34 @@ def run_models_test(config: dict, env: Optional[dict] = None,
     (Settings user > global config already collapsed by admin-api; env is the floor)."""
     env = env if env is not None else dict(os.environ)
     mode = (config.get("mode") or "").strip()
-    base_url = (config.get("base_url") or "").strip() or env.get("ANTHROPIC_BASE_URL", "")
-    api_key = (config.get("api_key") or "").strip() or env.get("ANTHROPIC_AUTH_TOKEN", "") \
-        or env.get("ANTHROPIC_API_KEY", "")
-    if mode == "custom" or (not mode and base_url and api_key):
-        out = test_custom_endpoint(base_url, api_key, (config.get("model") or "").strip(),
-                                   post=post)
+    cfg_base_url = (config.get("base_url") or "").strip()
+    cfg_api_key = (config.get("api_key") or "").strip()
+    model = (config.get("model") or "").strip()
+    if mode == "custom" and cfg_base_url:
+        # C1: a Settings-supplied endpoint is tested ONLY with the Settings-supplied key. The
+        # deployment's ANTHROPIC_* must never be posted to a host a user typed in — exactly the
+        # pairing rule the dispatch overlay enforces, so what is tested is what a turn gets.
+        problem = endpoint_host_problem(
+            cfg_base_url, allowlist=parse_allowlist(env.get(ALLOWLIST_ENV, "")),
+            allow_private=allow_private_from_env(env.get(ALLOW_PRIVATE_ENV)))
+        if problem:
+            out = _result(False, f"Custom endpoint refused — a turn would fall back to the "
+                                 f"deployment default: {problem}")
+        elif not cfg_api_key:
+            out = _result(False, f"Custom endpoint {cfg_base_url} has no API key. Deployment "
+                                 "credentials are never sent to a user-supplied endpoint — set "
+                                 "the API key that goes with this base URL.")
+        else:
+            out = test_custom_endpoint(cfg_base_url, cfg_api_key, model, post=post)
+        out["mode"] = "custom"
+    elif mode == "custom" or (not mode and env.get("ANTHROPIC_BASE_URL", "")
+                              and (env.get("ANTHROPIC_AUTH_TOKEN", "")
+                                   or env.get("ANTHROPIC_API_KEY", ""))):
+        # custom without an endpoint is inert (dispatch stamps nothing) — the deployment's own
+        # endpoint + key pair is what a turn uses, so that pair is what gets tested.
+        base_url = env.get("ANTHROPIC_BASE_URL", "")
+        api_key = env.get("ANTHROPIC_AUTH_TOKEN", "") or env.get("ANTHROPIC_API_KEY", "")
+        out = test_custom_endpoint(base_url, api_key, model, post=post)
         out["mode"] = "custom"
     else:
         out = test_subscription_credentials(creds_path)

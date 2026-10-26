@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     llm_provider: str = ""      # CompletionPort adapter key (openai-compat | anthropic); empty = default
     llm_model: str = ""         # deployment-default model (free string)
     model_allowlist: str = ""   # optional comma-separated gate on workspace-pinned models
+    # C1: policy for a SUBJECT-supplied model endpoint (Settings → Models mode:custom base_url).
+    # Hostnames a user may point the worker at (comma-separated; ".example.com" = domain + subdomains);
+    # empty = any PUBLIC host. Private/loopback/link-local/dotless hosts are refused unless the
+    # operator opts in below (a LiteLLM on the compose network is a dev setup, not a tenant choice).
+    model_base_url_allowlist: str = ""
+    model_allow_private_endpoints: bool = False
     meeting_idle_timeout_sec: int = Field(default=4 * 60 * 60, ge=60)
     # How long a CHAT worker serves its unit:<id>:in topic after the last turn before exiting
     # (TTL-on-idle). A live worker takes the thread's next message WARM (no container/CLI cold

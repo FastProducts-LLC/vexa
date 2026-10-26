@@ -19,6 +19,7 @@ import time
 from typing import Optional
 
 import contracts
+from control_plane.model_endpoint import endpoint_host_problem, parse_allowlist
 from control_plane.workspace_attach import active_workspaces, shared_active_mounts
 from control_plane.workspace_purpose import read_purpose
 from control_plane.system_mounts import GLOBAL_SLUG, SYSTEM_SLUG, global_mount, system_mount
@@ -134,13 +135,28 @@ MODEL_AUTH_ENV_ALLOWLIST = (
 )
 
 
+# The SECRET subset of the allowlist above — the keys a subject-supplied endpoint must never see.
+MODEL_CREDENTIAL_ENV_KEYS = (
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "VEXA_LLM_API_KEY",
+)
+# Stamped by overlay_model_config when the subject's config names the endpoint. Every credential
+# broker (build_unit_env's passthrough here; docker_backend's env copy + subscription mount in the
+# runtime) treats it as "do NOT add deployment credentials to this worker".
+MODEL_MODE_ENV = "VEXA_MODEL_MODE"
+MODEL_MODE_CUSTOM = "custom"
+
+
 def _allowlisted(model: str, allowlist: str) -> bool:
     """The operator's model gate (``VEXA_MODEL_ALLOWLIST``, comma-separated): empty = anything goes."""
     allowed = {m.strip() for m in allowlist.split(",") if m.strip()}
     return not allowed or model in allowed
 
 
-def overlay_model_config(env: dict[str, str], config: dict, *, allowlist: str = "") -> None:
+def overlay_model_config(env: dict[str, str], config: dict, *, allowlist: str = "",
+                         endpoint_allowlist: str = "", allow_private_endpoints: bool = False) -> None:
     """Overlay the subject's effective model config (Settings → Models: user pref > platform
     setting, resolved by admin-api) onto the dispatch env — field-by-field over the deployment
     env defaults, which stay the bottom fallback for anything unset.
@@ -155,7 +171,19 @@ def overlay_model_config(env: dict[str, str], config: dict, *, allowlist: str = 
     Dispatch-stamped values WIN downstream (the runtime copies its own env only for keys absent
     here — docker_backend's ``key not in spawn_env``). Models are gated by the operator's
     allowlist: a non-allowlisted model is DROPPED (deployment default applies), never an error —
-    a stale pref must not brick a turn."""
+    a stale pref must not brick a turn.
+
+    SECURITY (C1): a subject-supplied ``base_url`` and the credential that goes with it travel as
+    a PAIR. When the subject's config names an endpoint, the dispatch is marked
+    ``VEXA_MODEL_MODE=custom`` and ONLY the subject's ``api_key`` is stamped — never the
+    deployment's ``ANTHROPIC_*`` / ``CLAUDE_CODE_OAUTH_TOKEN`` / ``VEXA_LLM_API_KEY`` (see
+    ``build_unit_env``'s passthrough and the runtime's docker_backend, which both honour the
+    marker). A custom endpoint without a key therefore reaches the worker credential-LESS and
+    fails loudly with the missing-credential error, instead of carrying the deployment's paid key
+    to a host the subject chose. The endpoint itself must pass ``model_endpoint`` policy
+    (``VEXA_MODEL_BASE_URL_ALLOWLIST``, no private/internal hosts); a refused endpoint is DROPPED
+    with a warning and the deployment defaults apply — the deployment's credential then goes only
+    to the deployment's own endpoint."""
     model = (config.get("model") or "").strip()
     if model and _allowlisted(model, allowlist):
         env["VEXA_AGENT_MODEL"] = model     # harness turns (chat/docs/routines)
@@ -174,12 +202,25 @@ def overlay_model_config(env: dict[str, str], config: dict, *, allowlist: str = 
     api_key = (config.get("api_key") or "").strip()
     if not base_url:
         return  # custom mode without an endpoint is inert — deployment credentials still apply
+    problem = endpoint_host_problem(base_url, allowlist=parse_allowlist(endpoint_allowlist),
+                                    allow_private=allow_private_endpoints)
+    if problem:
+        logger.warning("custom model endpoint refused — using deployment default: %s", problem)
+        return
     env["ANTHROPIC_BASE_URL"] = base_url
     env["VEXA_LLM_PROVIDER"] = "openai-compat"
     env["VEXA_LLM_BASE_URL"] = base_url
+    # The marker every credential broker checks: deployment credentials stay OUT of this worker.
+    env[MODEL_MODE_ENV] = MODEL_MODE_CUSTOM
+    for key in MODEL_CREDENTIAL_ENV_KEYS:
+        env.pop(key, None)
     if api_key:
         env["ANTHROPIC_AUTH_TOKEN"] = api_key
         env["VEXA_LLM_API_KEY"] = api_key
+    else:
+        logger.warning("custom model endpoint %s has no api_key — the worker gets NO credential "
+                       "(deployment credentials are never sent to a subject-supplied endpoint)",
+                       base_url)
 
 
 def _worker_cwd(root: str, subject: str, mounts: list[dict]) -> str:
@@ -256,7 +297,9 @@ def build_unit_env(settings: Settings, invocation: dict, *, unit_id: str, token:
     # Settings → Models (per-user/platform config from admin-api) beats the deployment env
     # defaults stamped above, field-by-field; anything it leaves unset falls through unchanged.
     if model_config:
-        overlay_model_config(env, model_config, allowlist=settings.model_allowlist)
+        overlay_model_config(env, model_config, allowlist=settings.model_allowlist,
+                             endpoint_allowlist=settings.model_base_url_allowlist,
+                             allow_private_endpoints=settings.model_allow_private_endpoints)
     # The chat conversation thread (default "main") — the worker namespaces its continuity session file
     # by this so multiple threads coexist in the one user workspace. Meeting/digest paths ignore it.
     if invocation["trigger"] == "message":
@@ -315,7 +358,12 @@ def build_unit_env(settings: Settings, invocation: dict, *, unit_id: str, token:
     # preflight/auth taxonomy (llm/errors.py) still reports the actionable missing-credential error
     # and a creds-less CI boot is unaffected. Backends that also broker creds keep the
     # dispatch-stamped value (docker_backend copies a key only when it is NOT already in the spec env).
+    # C1: a subject-supplied endpoint (VEXA_MODEL_MODE=custom) gets ONLY the subject's credential —
+    # the deployment's secrets are skipped here, and the runtime skips them too (same marker).
+    custom_endpoint = env.get(MODEL_MODE_ENV) == MODEL_MODE_CUSTOM
     for key in MODEL_AUTH_ENV_ALLOWLIST:
+        if custom_endpoint and key in MODEL_CREDENTIAL_ENV_KEYS:
+            continue
         value = (os.environ.get(key) or "").strip()
         if value and key not in env:
             env[key] = value

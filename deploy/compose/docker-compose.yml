@@ -99,6 +99,10 @@ services:
       - ADMIN_API_TOKEN=${ADMIN_TOKEN:-changeme}
       - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:-vexa-internal-secret}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      # C1: the same custom-endpoint policy agent-api applies at dispatch, so Settings → Models
+      # rejects a disallowed base_url at write time (same values as the agent-api/.env ones).
+      - VEXA_MODEL_BASE_URL_ALLOWLIST=${VEXA_MODEL_BASE_URL_ALLOWLIST:-}
+      - VEXA_MODEL_ALLOW_PRIVATE_ENDPOINTS=${VEXA_MODEL_ALLOW_PRIVATE_ENDPOINTS:-}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health').status==200 else 1)"]
       interval: 10s
