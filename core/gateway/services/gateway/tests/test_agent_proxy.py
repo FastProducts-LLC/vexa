@@ -129,3 +129,47 @@ def test_verified_email_injected_and_spoof_stripped():
     client.post("/agent/workspace/invites/accept",
                 headers={**AUTH, "x-user-email": "attacker@evil.com"}, json={"token": "t"})
     assert downstream.last["headers"]["x-user-email"] == "u@example.com"  # resolved, not the spoof
+
+
+# ── agent-api trusts identity only with the gateway's internal-secret marker ───────────────────────
+
+def _secret_client(downstream=None):
+    downstream = downstream or FakeDownstream(status_code=200, body={"ok": True})
+    app = create_app(FakeAuthorizer(), downstream, FakeRedis(), agent_api_url="http://agent-api",
+                     meeting_api_url="http://meeting-api", internal_api_secret="gw-secret")
+    return TestClient(app), downstream
+
+
+def test_agent_forward_stamps_gateway_verified_marker():
+    client, downstream = _secret_client()
+    client.get("/agent/sessions", headers={**AUTH, "x-gateway-verified": "forged"})
+    assert downstream.last["headers"]["x-gateway-verified"] == "gw-secret"  # gateway's own, not the client's
+
+
+def test_agent_stream_forward_stamps_marker():
+    client, downstream = _secret_client()
+    client.post("/agent/chat", headers=AUTH, json={"prompt": "hi"})
+    assert downstream.last["headers"]["x-gateway-verified"] == "gw-secret"
+
+
+def test_client_supplied_marker_and_internal_secret_are_stripped():
+    """A client cannot smuggle its own marker / internal secret through the gateway."""
+    client, downstream = _secret_client()
+    client.get("/agent/sessions", headers={**AUTH, "x-internal-secret": "forged"})
+    assert "x-internal-secret" not in downstream.last["headers"]
+    client.get("/meetings", headers={**AUTH, "x-gateway-verified": "forged", "x-internal-secret": "forged"})
+    assert "x-gateway-verified" not in downstream.last["headers"]
+    assert "x-internal-secret" not in downstream.last["headers"]
+
+
+def test_meeting_forward_never_carries_the_secret():
+    client, downstream = _secret_client()
+    client.get("/meetings", headers=AUTH)
+    assert downstream.last["url"].startswith("http://meeting-api")
+    assert "x-gateway-verified" not in downstream.last["headers"]
+
+
+def test_keyless_agent_call_never_gets_marker():
+    client, downstream = _secret_client()
+    assert client.get("/agent/sessions", headers={"x-gateway-verified": "gw-secret"}).status_code == 401
+    assert downstream.last is None

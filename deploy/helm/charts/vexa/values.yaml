@@ -48,8 +48,8 @@ global:
 # ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL, CLAUDE_CODE_OAUTH_TOKEN.
 secrets:
   existingSecretName: ""
-  adminApiToken: "CHANGE_ME"        # admin-api auth + MeetingToken signing (== meeting-api ADMIN_TOKEN)
-  internalApiSecret: ""             # gateway↔admin-api↔meeting-api internal calls (default vexa-internal-secret)
+  adminApiToken: ""                 # REQUIRED (render fails if empty/placeholder): admin-api auth + MeetingToken signing (== meeting-api ADMIN_TOKEN)
+  internalApiSecret: ""             # REQUIRED (render fails if empty/placeholder): gateway↔admin-api↔meeting-api↔agent-api internal edge
   transcriptionServiceToken: ""     # funded STT token threaded into spawned bots
   serviceAuthoritySecret: ""        # exact-byte HMAC secret; required only when meetingApi.serviceAuthorityConfig is set
   systemWebhookSecret: ""           # exact-byte HMAC secret; required only when meetingApi.systemWebhookUrl is set
@@ -295,7 +295,7 @@ agentApi:
   service:
     type: ClusterIP
     port: 8100
-  defaultSubject: "u_live"      # VEXA_AGENT_DEFAULT_SUBJECT single-user fallback until gateway fronts agent-api
+  defaultSubject: ""            # VEXA_AGENT_DEFAULT_SUBJECT — honored only with VEXA_REQUIRE_GATEWAY_IDENTITY=0 (dev)
   logLevel: "info"
   # Workspace store the worker mounts and agent-api reads. On k3s (local-path = RWO) keep agentApi at
   # replicaCount 1; full agent-worker dispatch on k8s needs RWX storage (see README — follow-up).

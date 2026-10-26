@@ -89,8 +89,15 @@ spec:
                   name: {{ include "vexa.adminTokenSecretName" . }}
                   key: VEXA_BOT_API_KEY
                   optional: true
+            # agent-api trusts X-User-Id only with the gateway's X-Gateway-Verified == this secret, and
+            # requires it as X-Internal-Secret on /invocations + /events (the runtime's routine fires).
+            - name: VEXA_INTERNAL_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vexa.adminTokenSecretName" . }}
+                  key: INTERNAL_API_SECRET
             - name: VEXA_AGENT_DEFAULT_SUBJECT
-              value: {{ .Values.agentApi.defaultSubject | default "u_live" | quote }}
+              value: {{ .Values.agentApi.defaultSubject | default "" | quote }}
             - name: VEXA_AGENT_MODEL
               value: {{ .Values.models.agentModel | default "" | quote }}
             - name: VEXA_MEETING_MODEL

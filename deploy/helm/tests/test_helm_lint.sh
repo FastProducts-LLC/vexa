@@ -13,8 +13,24 @@ for f in Chart.yaml values.yaml values-test.yaml templates; do
 done
 
 if command -v helm >/dev/null 2>&1; then
-  echo "  Linting (default values)..."
-  helm lint "$CHART"
+  # The default values ship NO stack secrets (adminApiToken / internalApiSecret are required), so the
+  # default-values lint supplies operator values; rendering without them must FAIL, as must a
+  # published placeholder.
+  echo "  Linting (default values + operator-supplied secrets)..."
+  helm lint "$CHART" --set secrets.adminApiToken=lint-admin --set secrets.internalApiSecret=lint-internal
+  echo "  Refusing default secrets..."
+  if helm template vexa "$CHART" >/dev/null 2>&1; then
+    echo "FAIL: chart rendered with no adminApiToken/internalApiSecret"; exit 1
+  fi
+  if helm template vexa "$CHART" --set secrets.adminApiToken=changeme \
+       --set secrets.internalApiSecret=lint-internal >/dev/null 2>&1; then
+    echo "FAIL: chart rendered with the placeholder adminApiToken"; exit 1
+  fi
+  if helm template vexa "$CHART" --set secrets.adminApiToken=lint-admin \
+       --set secrets.internalApiSecret=vexa-internal-secret >/dev/null 2>&1; then
+    echo "FAIL: chart rendered with the placeholder internalApiSecret"; exit 1
+  fi
+  echo "  OK: empty / placeholder stack secrets refused"
   echo "  Linting (values-test)..."
   helm lint "$CHART" -f "$CHART/values-test.yaml"
 else

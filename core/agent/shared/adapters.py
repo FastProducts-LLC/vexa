@@ -415,11 +415,19 @@ class SchedulerHttpClient(SchedulerPort):
     """A ``SchedulerPort`` over the runtime's ``/schedule`` surface (schedule.v1) — the control-plane→cron
     edge. agent-api authors routine jobs here; the runtime owns the durable cron. Stdlib urllib, no dep."""
 
-    def __init__(self, base_url: str, *, timeout: float = 10.0) -> None:
+    def __init__(self, base_url: str, *, timeout: float = 10.0,
+                 request_headers: dict[str, str] | None = None) -> None:
         self._base = base_url.rstrip("/")
         self._timeout = timeout
+        # Headers stamped onto every job's fire request — the internal-tier secret agent-api's
+        # /invocations sink requires (it is internal-only; the runtime fires it on the routine's behalf).
+        self._request_headers = dict(request_headers or {})
 
     def schedule(self, job: dict) -> dict:
+        if self._request_headers and isinstance(job.get("request"), dict):
+            req_spec = dict(job["request"])
+            req_spec["headers"] = {**(req_spec.get("headers") or {}), **self._request_headers}
+            job = {**job, "request": req_spec}
         body = json.dumps(job).encode()
         req = urllib.request.Request(
             f"{self._base}/schedule", data=body,

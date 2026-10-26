@@ -47,8 +47,21 @@ def transcription_golden() -> dict:
 def _default_subject(monkeypatch):
     """The HTTP tests exercise agent-api with no gateway in front, so set the single-user fallback
     (``VEXA_AGENT_DEFAULT_SUBJECT``) — agent-api derives the subject from it when ``X-User-Id`` is absent.
-    Tests that assert per-user *isolation* pass an explicit ``X-User-Id`` header, which always wins (P20)."""
+    Tests that assert per-user *isolation* pass an explicit ``X-User-Id`` header, which always wins (P20).
+    These suites run the explicit dev/direct opt-out (VEXA_REQUIRE_GATEWAY_IDENTITY=0); the fail-closed
+    production default is covered by test_gateway_identity.py, which overrides this."""
     monkeypatch.setenv("VEXA_AGENT_DEFAULT_SUBJECT", "u_jane")
+    monkeypatch.setenv("VEXA_REQUIRE_GATEWAY_IDENTITY", "0")
+
+
+@pytest.fixture(autouse=True)
+def _local_clones(monkeypatch):
+    """The workspace suites clone REAL git over local repos (no network). Production only clones
+    https:// from allowlisted hosts; this flips the module's (non-env) test seam so local paths work.
+    test_workspace_attach_url_policy.py resets it to prove the production policy."""
+    from control_plane import workspace_attach
+
+    monkeypatch.setattr(workspace_attach, "_ALLOW_LOCAL_CLONES", True)
 
 
 @pytest.fixture(autouse=True)
