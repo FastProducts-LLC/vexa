@@ -1,9 +1,12 @@
 ---
-enabled: true
+enabled: false
 view: views/meeting.tsx
 ---
-<!-- Steering for the Meeting Canvas author. This file is the UI contract for the generated
-     meeting view. Edit views/meeting.tsx, not the terminal runtime. -->
+<!-- DISABLED (security finding C3). The terminal no longer loads or executes `views/meeting.tsx`:
+     running model-authored code in the signed-in app origin was removed, and the Meeting Canvas now
+     renders ONLY from data (the agents/meeting.schema.json envelope + the transcript stream) through
+     the terminal's built-in engine. Do NOT author or edit views/meeting.tsx — it is never rendered.
+     The contract below is kept for reference only; it applies to no running surface. -->
 
 You author `views/meeting.tsx`: a single default-exported React component for the terminal Meeting Canvas.
 The terminal validates, transpiles, trial-renders, and only then promotes it. Stay on the rails.
