@@ -338,10 +338,11 @@ def _endpoint_host_problem(base_url: str) -> Optional[str]:
 
 
 def _check_model_pairing(merged: dict) -> None:
-    """C1: a custom endpoint and its credential are stored as a PAIR, at both tiers. A base_url
-    without an api_key would make the dispatch reach the worker credential-less (the deployment's
-    key never follows a user-supplied endpoint), and mode=custom without an endpoint is a dead
-    setting — refuse both with the reason instead of storing a config that cannot work."""
+    """C1: at the USER tier a custom endpoint and its credential are stored as a PAIR. A base_url
+    without an api_key would reach the worker credential-less (the deployment's key never follows
+    a user-supplied endpoint), and mode=custom without an endpoint is a dead setting — refuse both
+    with the reason instead of storing a config that cannot work. (The platform tier is the
+    operator's: a platform base_url may pair with the deployment's own credentials.)"""
     mode = (merged.get("mode") or "").strip()
     base_url = (merged.get("base_url") or "").strip()
     api_key = (merged.get("api_key") or "").strip()
@@ -377,7 +378,9 @@ def _validate_config_fields(update: dict, *, kind: str) -> dict:
             if parsed.scheme not in ("http", "https") or not parsed.hostname:
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                                     detail=f"{field} must be an http(s) URL")
-        if field == "base_url" and kind in ("models", "model_prefs"):
+        if field == "base_url" and kind == "model_prefs":
+            # C1: the USER tier only — an operator's platform endpoint may legitimately be a
+            # private gateway on the compose network; a tenant's may not.
             problem = _endpoint_host_problem(value)
             if problem:
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=problem)
@@ -418,6 +421,10 @@ def _resolve_effective_models(user_cfg: dict, platform_cfg: dict) -> dict:
             out["api_key"] = user_key
         else:
             out.pop("api_key", None)
+        out["endpoint_source"] = "user"
+    elif out.get("base_url"):
+        # Operator-chosen: dispatch may pair it with the deployment's own credentials.
+        out["endpoint_source"] = "platform"
     return out
 
 
@@ -1104,8 +1111,6 @@ def create_app() -> FastAPI:
         cleaned = _validate_config_fields(update, kind=key)
         row = await db.get(PlatformSetting, key)
         merged = _apply_config_update(dict(row.value) if row is not None else {}, cleaned)
-        if key == "models":
-            _check_model_pairing(merged)
         if row is None:
             row = PlatformSetting(key=key, value=merged)
         else:

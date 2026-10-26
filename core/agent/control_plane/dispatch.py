@@ -147,6 +147,9 @@ MODEL_CREDENTIAL_ENV_KEYS = (
 # runtime) treats it as "do NOT add deployment credentials to this worker".
 MODEL_MODE_ENV = "VEXA_MODEL_MODE"
 MODEL_MODE_CUSTOM = "custom"
+# admin-api's resolver annotates WHO chose the endpoint ("user" | "platform"); absent = user.
+ENDPOINT_SOURCE_FIELD = "endpoint_source"
+ENDPOINT_SOURCE_PLATFORM = "platform"
 
 
 def _allowlisted(model: str, allowlist: str) -> bool:
@@ -174,7 +177,9 @@ def overlay_model_config(env: dict[str, str], config: dict, *, allowlist: str = 
     a stale pref must not brick a turn.
 
     SECURITY (C1): a subject-supplied ``base_url`` and the credential that goes with it travel as
-    a PAIR. When the subject's config names an endpoint, the dispatch is marked
+    a PAIR. When the SUBJECT's config names the endpoint (admin-api's ``endpoint_source`` is not
+    ``"platform"`` — an operator-chosen platform endpoint keeps pairing with the deployment's own
+    credentials, which is what the operator set it up for), the dispatch is marked
     ``VEXA_MODEL_MODE=custom`` and ONLY the subject's ``api_key`` is stamped — never the
     deployment's ``ANTHROPIC_*`` / ``CLAUDE_CODE_OAUTH_TOKEN`` / ``VEXA_LLM_API_KEY`` (see
     ``build_unit_env``'s passthrough and the runtime's docker_backend, which both honour the
@@ -210,25 +215,32 @@ def overlay_model_config(env: dict[str, str], config: dict, *, allowlist: str = 
     api_key = (config.get("api_key") or "").strip()
     if not base_url:
         return  # custom mode without an endpoint is inert — deployment credentials still apply
-    problem = endpoint_host_problem(base_url, allowlist=parse_allowlist(endpoint_allowlist),
-                                    allow_private=allow_private_endpoints)
-    if problem:
-        logger.warning("custom model endpoint refused — using deployment default: %s", problem)
-        return
+    # Who chose the endpoint? admin-api's resolver says (``endpoint_source``: "user" | "platform").
+    # An OPERATOR-chosen platform endpoint keeps the pre-C1 semantics (operator gateway, operator
+    # credentials — the deployment env may pair with it). Anything else — and an older admin-api
+    # that does not say — is treated as SUBJECT-supplied: fail safe.
+    subject_supplied = (config.get(ENDPOINT_SOURCE_FIELD) or "user") != ENDPOINT_SOURCE_PLATFORM
+    if subject_supplied:
+        problem = endpoint_host_problem(base_url, allowlist=parse_allowlist(endpoint_allowlist),
+                                        allow_private=allow_private_endpoints)
+        if problem:
+            logger.warning("custom model endpoint refused — using deployment default: %s", problem)
+            return
     env["ANTHROPIC_BASE_URL"] = base_url
     env["VEXA_LLM_PROVIDER"] = "openai-compat"
     env["VEXA_LLM_BASE_URL"] = base_url
-    # The marker every credential broker checks: deployment credentials stay OUT of this worker.
-    env[MODEL_MODE_ENV] = MODEL_MODE_CUSTOM
-    for key in MODEL_CREDENTIAL_ENV_KEYS:
-        env.pop(key, None)
+    if subject_supplied:
+        # The marker every credential broker checks: deployment credentials stay OUT of this worker.
+        env[MODEL_MODE_ENV] = MODEL_MODE_CUSTOM
+        for key in MODEL_CREDENTIAL_ENV_KEYS:
+            env.pop(key, None)
+        if not api_key:
+            logger.warning("custom model endpoint %s has no api_key — the worker gets NO credential "
+                           "(deployment credentials are never sent to a subject-supplied endpoint)",
+                           base_url)
     if api_key:
         env["ANTHROPIC_AUTH_TOKEN"] = api_key
         env["VEXA_LLM_API_KEY"] = api_key
-    else:
-        logger.warning("custom model endpoint %s has no api_key — the worker gets NO credential "
-                       "(deployment credentials are never sent to a subject-supplied endpoint)",
-                       base_url)
 
 
 def _worker_cwd(root: str, subject: str, mounts: list[dict]) -> str:
