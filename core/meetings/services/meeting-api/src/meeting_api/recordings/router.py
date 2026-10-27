@@ -11,9 +11,7 @@
 """
 from __future__ import annotations
 
-import hmac
 import json
-import os
 from typing import Optional
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
@@ -146,19 +144,20 @@ def build_router(
         duration_seconds = duration_seconds if duration_seconds is not None else meta.get("duration_seconds")
         sample_rate = sample_rate if sample_rate is not None else meta.get("sample_rate")
 
-        # Auth: accept either the INTERNAL_API_SECRET (the bot's internal upload uses it, like the
-        # lifecycle callback; meeting is scoped by session_uid) OR a MeetingToken (carries its meeting_id).
+        # Auth (C4): ONLY the bot's own MeetingToken (HS256, MEETING_TOKEN_SECRET), which carries its
+        # meeting_id and — for tokens minted since the C4 follow-up — its connection_id. The shared
+        # INTERNAL_API_SECRET bearer is no longer accepted: bots do not hold it any more, and with it
+        # any holder could write into ANY session. The stock bot sends `Bearer <invocation.internalSecret>`;
+        # in BOT_LEGACY_INTERNAL_SECRET mode that slot carries the same MeetingToken, so it verifies here.
         bearer = _bearer_token(authorization)
-        internal_secret = os.getenv("INTERNAL_API_SECRET")
-        token_meeting_id: Optional[int] = None
-        if internal_secret and hmac.compare_digest(bearer.encode("utf-8"), internal_secret.encode("utf-8")):
-            token_meeting_id = None  # internal auth → scope by session; skip the MeetingToken cross-check
-        else:
-            try:
-                claims = _verify_meeting_token(bearer, secret=token_secret)
-            except ValueError as e:
-                raise HTTPException(status_code=401, detail=f"Invalid recording upload token: {e}")
-            token_meeting_id = int(claims["meeting_id"])
+        try:
+            claims = _verify_meeting_token(bearer, secret=token_secret)
+        except ValueError as e:
+            raise HTTPException(status_code=401, detail=f"Invalid recording upload token: {e}")
+        token_meeting_id: Optional[int] = int(claims["meeting_id"])
+        bound_session = claims.get("connection_id")
+        if bound_session is not None and str(bound_session) != str(session_uid):
+            raise HTTPException(status_code=403, detail="MeetingToken is bound to a different session")
 
         data = await file.read()
         try:

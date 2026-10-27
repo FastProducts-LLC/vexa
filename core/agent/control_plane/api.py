@@ -966,7 +966,10 @@ def create_app(
     # The SSE ownership gate's owner-lookup (P0): default = HTTP to meeting-api; injectable for L2 tests.
     # meeting-api honors X-User-Id only with the X-Gateway-Verified marker (== the internal-tier secret),
     # so agent-api's own identity-scoped hops to it carry the marker too.
-    _mapi_secret = settings.internal_api_secret.get_secret_value() if settings is not None else ""
+    # C4 split: the marker is the GATEWAY IDENTITY secret (VEXA_GATEWAY_IDENTITY_SECRET), not admin-api's
+    # internal key; legacy fallback = the single internal secret.
+    _mapi_secret = os.environ.get("VEXA_GATEWAY_IDENTITY_SECRET", "") or (
+        settings.internal_api_secret.get_secret_value() if settings is not None else "")
     _meeting_owner_lookup = meeting_owner_lookup or _http_meeting_owner_lookup(
         settings.meeting_api_url if settings is not None else "", internal_secret=_mapi_secret)
 
@@ -1003,6 +1006,10 @@ def create_app(
     _internal_secret = (
         settings.internal_api_secret.get_secret_value() if settings is not None else ""
     ) or os.environ.get("VEXA_INTERNAL_API_SECRET", "")
+    # C4 split: X-Gateway-Verified is checked against the gateway identity secret; X-Internal-Secret
+    # (the internal tier: terminal, runtime-fired routines) against the internal secret. Unset identity
+    # secret → the legacy single secret (un-migrated deploys keep working).
+    _gateway_identity = os.environ.get("VEXA_GATEWAY_IDENTITY_SECRET", "") or _internal_secret
     if not _require_gateway_identity:
         logger.warning("VEXA_REQUIRE_GATEWAY_IDENTITY=0 — agent-api trusts unauthenticated X-User-Id headers "
                        "and leaves /invocations + /events open; never expose this port beyond localhost")
@@ -1011,12 +1018,16 @@ def create_app(
         return bool(_internal_secret) and bool(provided) and hmac.compare_digest(
             provided.encode(), _internal_secret.encode())
 
+    def _gateway_matches(provided: str) -> bool:
+        return bool(_gateway_identity) and bool(provided) and hmac.compare_digest(
+            provided.encode(), _gateway_identity.encode())
+
     def require_internal_caller(request: Request) -> None:
         """Gate for the internal-only sinks (/invocations, /events): the caller must present the
         internal-tier secret (``X-Internal-Secret``, or the gateway marker). Opt-out mode skips it."""
         if not _require_gateway_identity:
             return
-        if _secret_matches(request.headers.get("x-internal-secret", "")) or _secret_matches(
+        if _secret_matches(request.headers.get("x-internal-secret", "")) or _gateway_matches(
                 request.headers.get("x-gateway-verified", "")):
             return
         raise HTTPException(status_code=401, detail="internal secret required")
@@ -1028,7 +1039,7 @@ def create_app(
         missing/wrong or the header is absent. The ``VEXA_AGENT_DEFAULT_SUBJECT`` single-user fallback is
         honored ONLY in the explicit opt-out mode (VEXA_REQUIRE_GATEWAY_IDENTITY=0)."""
         if _require_gateway_identity:
-            if not _secret_matches(request.headers.get("x-gateway-verified", "")):
+            if not _gateway_matches(request.headers.get("x-gateway-verified", "")):
                 raise HTTPException(status_code=401, detail="gateway-verified identity required")
             uid = request.headers.get("x-user-id")
             if uid:

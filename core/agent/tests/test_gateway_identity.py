@@ -154,3 +154,31 @@ def test_meeting_owner_lookup_stamps_gateway_marker(monkeypatch):
     assert seen[-1]["x-gateway-verified"] == "isec" and seen[-1]["x-user-id"] == "7"
     _http_meeting_owner_lookup("http://meeting-api:8080")("7", "5")
     assert "x-gateway-verified" not in seen[-1]
+
+
+# ── C4 split: the gateway identity marker and the internal tier are DIFFERENT secrets ─────────────
+
+IDENTITY = "gw-identity-secret"
+
+
+@pytest.fixture
+def split_env(prod_env, monkeypatch):
+    monkeypatch.setenv("VEXA_GATEWAY_IDENTITY_SECRET", IDENTITY)
+
+
+def test_split_identity_marker_accepts_only_the_gateway_identity_secret(split_env, tmp_path):
+    c, _ = _client(tmp_path)
+    ok = c.get("/api/sessions", headers={"X-User-Id": "u_alice", "X-Gateway-Verified": IDENTITY})
+    assert ok.status_code == 200, ok.text
+    # the internal-tier / admin-api key is NOT an identity marker any more
+    assert c.get("/api/sessions", headers={"X-User-Id": "u_alice",
+                                           "X-Gateway-Verified": SECRET}).status_code == 401
+
+
+def test_split_internal_sinks_take_the_internal_secret_or_the_identity_marker(split_env, tmp_path):
+    c, _ = _client(tmp_path)
+    assert c.post("/events", json=_EVENT).status_code == 401
+    assert c.post("/events", json=_EVENT, headers={"X-Internal-Secret": IDENTITY}).status_code == 401
+    assert c.post("/events", json=_EVENT, headers={"X-Gateway-Verified": SECRET}).status_code == 401
+    assert c.post("/events", json=_EVENT, headers={"X-Internal-Secret": SECRET}).status_code != 401
+    assert c.post("/events", json=_EVENT, headers={"X-Gateway-Verified": IDENTITY}).status_code != 401

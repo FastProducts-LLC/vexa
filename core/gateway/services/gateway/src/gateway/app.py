@@ -227,8 +227,10 @@ def create_app(
     # direct (non-gateway) caller on the compose network cannot pose as a user. meeting-api enforces the
     # SAME marker on every x-user-* request (meeting_api/internal_auth.py), so it is stamped on agent AND
     # meeting-api forwards — never on admin-api forwards (admin-api authenticates the X-API-Key itself).
-    _gateway_secret = internal_api_secret if internal_api_secret is not None else os.getenv(
-        "INTERNAL_API_SECRET", "")
+    # C4 split: the marker is GATEWAY_IDENTITY_SECRET — NOT admin-api's internal key and never a value
+    # a bot holds. Legacy fallback: INTERNAL_API_SECRET.
+    _gateway_secret = internal_api_secret if internal_api_secret is not None else (
+        os.getenv("GATEWAY_IDENTITY_SECRET") or os.getenv("INTERNAL_API_SECRET", ""))
 
     def _stamp_agent(url: str, headers: dict) -> dict:
         if _gateway_secret and (url.startswith(f"{agent_api_url}/") or url.startswith(f"{meeting_api_url}/")):

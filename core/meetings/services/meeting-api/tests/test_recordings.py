@@ -221,23 +221,40 @@ def test_upload_route_rejects_token_without_exp():
     assert "exp" in r.json()["detail"]
 
 
-def test_upload_route_internal_secret_bearer_still_accepted(monkeypatch):
+def test_upload_route_shared_internal_secret_bearer_is_refused(monkeypatch):
+    """C4 follow-up: bots no longer hold INTERNAL_API_SECRET, and with it any holder could write into
+    ANY session — the upload accepts only the bot's MeetingToken now."""
     monkeypatch.setenv("INTERNAL_API_SECRET", "isec-123")
     client = _client()
-    ok = client.post(
+    r = client.post(
         "/internal/recordings/upload",
         headers={"Authorization": "Bearer isec-123"},
         data={"session_uid": SESSION_UID, "media_format": "wav", "chunk_seq": 0, "is_final": "true"},
         files={"file": ("c.wav", _wav(), "audio/wav")},
     )
-    assert ok.status_code == 200, ok.text
-    bad = client.post(
+    assert r.status_code == 401, r.text
+
+
+def test_upload_route_token_bound_to_another_session_is_403():
+    from meeting_api.bot_spawn.invocation import mint_meeting_token
+
+    client = _client()
+    other = mint_meeting_token(MEETING_ID, 1, "google_meet", "x", secret=SECRET, connection_id="another-session")
+    r = client.post(
         "/internal/recordings/upload",
-        headers={"Authorization": "Bearer isec-12"},
-        data={"session_uid": SESSION_UID, "media_format": "wav", "chunk_seq": 1, "is_final": "true"},
+        headers={"Authorization": f"Bearer {other}"},
+        data={"session_uid": SESSION_UID, "media_format": "wav", "chunk_seq": 0, "is_final": "true"},
         files={"file": ("c.wav", _wav(), "audio/wav")},
     )
-    assert bad.status_code == 401
+    assert r.status_code == 403, r.text
+    bound = mint_meeting_token(MEETING_ID, 1, "google_meet", "x", secret=SECRET, connection_id=SESSION_UID)
+    ok = client.post(
+        "/internal/recordings/upload",
+        headers={"Authorization": f"Bearer {bound}"},
+        data={"session_uid": SESSION_UID, "media_format": "wav", "chunk_seq": 0, "is_final": "true"},
+        files={"file": ("c.wav", _wav(), "audio/wav")},
+    )
+    assert ok.status_code == 200, ok.text
 
 
 # ── G4: object-storage I/O must not block the event loop ─────────────────────────────────────────

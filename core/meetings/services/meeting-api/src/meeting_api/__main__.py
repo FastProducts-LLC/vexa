@@ -25,6 +25,8 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+from .trust_secrets import admin_api_internal_secret, meeting_token_secret
+
 log = logging.getLogger("meeting_api.entrypoint")
 
 
@@ -45,9 +47,9 @@ def _require_config(env: "os._Environ | dict | None" = None) -> None:
 
     ``config.v1.json`` (next to this module) declares every env key the service consumes; the
     vendored shared preflight raises ``ConfigError`` (a ``RuntimeError``) naming every missing
-    *required-explicit* key — today ADMIN_TOKEN, which HS256-signs the MeetingToken every spawn
-    mints (invocation.mint_meeting_token) AND the recordings-upload verifier checks; unset, the
-    deploy would 500 every POST /bots, so it refuses to boot instead. Capability tri-states
+    *required-explicit* key. The MeetingToken key (MEETING_TOKEN_SECRET, or the deprecated ADMIN_TOKEN
+    fallback) signs every spawn's token and verifies the bot callback + recordings upload; with
+    neither set the deploy would 500 every POST /bots, so it refuses to boot instead. Capability tri-states
     (stt · object_storage, incl. the STT live auth probe) are logged here and exposed on
     ``/health``; they never block boot.
     """
@@ -55,6 +57,19 @@ def _require_config(env: "os._Environ | dict | None" = None) -> None:
 
     preflight(env)
     _reject_default_secrets(env)
+    _require_meeting_token_secret(env)
+
+
+def _require_meeting_token_secret(env: "os._Environ | dict | None" = None) -> None:
+    """Without a MeetingToken key every POST /bots would 500 and every bot callback 503 — refuse
+    the boot instead (A4). MEETING_TOKEN_SECRET, or the deprecated ADMIN_TOKEN fallback."""
+    from .config_preflight import ConfigError
+
+    if not meeting_token_secret(os.environ if env is None else env):
+        raise ConfigError(
+            "MEETING_TOKEN_SECRET is not set (nor the deprecated ADMIN_TOKEN fallback): bots cannot be "
+            "issued or verify a MeetingToken"
+        )
 
 
 # The well-known placeholder values the stock compose file / .env.example fall back to. A deploy
@@ -63,6 +78,10 @@ def _require_config(env: "os._Environ | dict | None" = None) -> None:
 _KNOWN_DEFAULT_SECRETS = {
     "ADMIN_TOKEN": {"changeme", "dev-admin-token"},
     "INTERNAL_API_SECRET": {"vexa-internal-secret"},
+    "GATEWAY_IDENTITY_SECRET": {"vexa-internal-secret"},
+    "ADMIN_API_INTERNAL_SECRET": {"vexa-internal-secret"},
+    "RUNTIME_CALLBACK_SECRET": {"vexa-internal-secret"},
+    "MEETING_TOKEN_SECRET": {"changeme", "dev-admin-token"},
     "DB_PASSWORD": {"postgres"},
     "MINIO_SECRET_KEY": {"vexa-secret-key"},
     # C5: the runtime control-plane bearer. UNSET counts too — without it every spawn is refused by
@@ -114,10 +133,10 @@ def build_production_app():
     database_url = _database_url()
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     runtime_api_url = os.getenv("RUNTIME_API_URL", "http://runtime:8090")
-    # MeetingToken is HS256-signed (mint) AND verified (recordings upload) with the SAME secret =
-    # ADMIN_TOKEN, exactly like main. (INTERNAL_API_SECRET is for the gateway↔admin-api internal
-    # validation only — a different concern.) None → the recordings verifier falls back to ADMIN_TOKEN.
-    token_secret = os.getenv("ADMIN_TOKEN") or None
+    # MeetingToken is HS256-signed (mint) AND verified (lifecycle callback + recordings upload) with
+    # MEETING_TOKEN_SECRET — its own key since the C4 follow-up (it used to be ADMIN_TOKEN, admin-api's
+    # admin key). Unset → falls back to ADMIN_TOKEN with a deprecation warning (trust_secrets).
+    token_secret = meeting_token_secret() or None
 
     engine = create_async_engine(database_url, pool_pre_ping=True)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -171,7 +190,7 @@ def build_production_app():
     # unavailable" and the route answers 404/503 accordingly.
     async def _calendar_sync_now(user_id: int):
         admin_api_url = (os.getenv("ADMIN_API_URL") or "").rstrip("/")
-        internal_secret = os.getenv("INTERNAL_API_SECRET") or ""
+        internal_secret = admin_api_internal_secret()
         if not (admin_api_url and internal_secret):
             return None
         import json as _json
@@ -389,7 +408,7 @@ def _attach_background_loops(app, transcript_store, segment_bus, redis_client, m
     auto_join_grace = float(os.getenv("AUTO_JOIN_GRACE_S", "600"))
     auto_join_backoff = float(os.getenv("AUTO_JOIN_RETRY_BACKOFF_S", "300"))
     admin_api_url = (os.getenv("ADMIN_API_URL") or "").rstrip("/")
-    internal_secret = os.getenv("INTERNAL_API_SECRET") or ""
+    internal_secret = admin_api_internal_secret()
 
     async def _auto_join_loop() -> None:
         if meeting_repo is None or runtime is None or not hasattr(meeting_repo, "list_scheduled_meetings"):
@@ -432,7 +451,7 @@ def _attach_background_loops(app, transcript_store, segment_bus, redis_client, m
                     publish_status=publish_status,
                     lead_s=auto_join_lead, grace_s=auto_join_grace,
                     retry_backoff_s=auto_join_backoff,
-                    token_secret=os.getenv("ADMIN_TOKEN") or None,
+                    token_secret=meeting_token_secret() or None,
                     redis_url=os.getenv("REDIS_URL"),
                 )
             except asyncio.CancelledError:

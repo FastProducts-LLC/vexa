@@ -18,6 +18,15 @@ def test_headers_from_env():
     assert internal_callback_headers({"INTERNAL_API_SECRET": "  s3cret \n"}) == {INTERNAL_SECRET_HEADER: "s3cret"}
     assert internal_callback_headers({"INTERNAL_API_SECRET": ""}) == {}
     assert internal_callback_headers({"INTERNAL_API_SECRET": "   "}) == {}
+
+
+def test_runtime_callback_secret_wins_over_the_legacy_shared_secret():
+    """C4 split: the kernel stamps ITS callback secret, never the shared/gateway value, once set."""
+    env = {"RUNTIME_CALLBACK_SECRET": "rcs", "INTERNAL_API_SECRET": "legacy"}
+    assert internal_callback_headers(env) == {INTERNAL_SECRET_HEADER: "rcs"}
+    assert internal_callback_headers({"RUNTIME_CALLBACK_SECRET": "rcs"}) == {INTERNAL_SECRET_HEADER: "rcs"}
+    assert internal_callback_headers({"RUNTIME_CALLBACK_SECRET": " ", "INTERNAL_API_SECRET": "legacy"}) == {
+        INTERNAL_SECRET_HEADER: "legacy"}
     assert internal_callback_headers({}) == {}
 
 
@@ -51,6 +60,7 @@ def test_api_callbacks_carry_the_secret_on_every_attempt(monkeypatch):
 
 def test_api_callbacks_omit_the_header_when_unset(monkeypatch):
     monkeypatch.delenv("INTERNAL_API_SECRET", raising=False)
+    monkeypatch.delenv("RUNTIME_CALLBACK_SECRET", raising=False)
     seen: list[dict] = []
 
     def poster(url, payload, headers):

@@ -64,7 +64,8 @@ class AdminApiAuthorizer:
     async def resolve(self, api_key: str) -> Optional[dict]:
         try:
             headers = {TRACE_HEADER: get_trace_id() or ""}
-            internal_secret = os.getenv("INTERNAL_API_SECRET", "")
+            # admin-api's internal key (C4 split): ADMIN_API_INTERNAL_SECRET, legacy INTERNAL_API_SECRET.
+            internal_secret = os.getenv("ADMIN_API_INTERNAL_SECRET") or os.getenv("INTERNAL_API_SECRET", "")
             if internal_secret:
                 headers["X-Internal-Secret"] = internal_secret
             resp = await self._client.post(
@@ -83,10 +84,11 @@ class AdminApiAuthorizer:
         auth_headers = {"X-API-Key": api_key, TRACE_HEADER: get_trace_id() or ""}
         user_data = await self.resolve(api_key)
         if user_data:
-            # meeting-api honors x-user-* only alongside the gateway marker (== INTERNAL_API_SECRET).
-            internal_secret = os.getenv("INTERNAL_API_SECRET", "")
-            if internal_secret:
-                auth_headers["x-gateway-verified"] = internal_secret
+            # meeting-api honors x-user-* only alongside the gateway marker (== GATEWAY_IDENTITY_SECRET,
+            # C4 split; legacy fallback INTERNAL_API_SECRET).
+            identity_secret = os.getenv("GATEWAY_IDENTITY_SECRET") or os.getenv("INTERNAL_API_SECRET", "")
+            if identity_secret:
+                auth_headers["x-gateway-verified"] = identity_secret
             auth_headers["x-user-id"] = str(user_data["user_id"])
             auth_headers["x-user-scopes"] = ",".join(user_data.get("scopes", []))
             auth_headers["x-user-limits"] = str(user_data.get("max_concurrent", 3))

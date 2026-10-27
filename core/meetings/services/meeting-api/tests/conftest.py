@@ -31,7 +31,10 @@ def _dev_mode_identity_edge(monkeypatch):
     opens the C4 callback edges (callback_auth.py: the bot lifecycle callback + the runtime callback),
     which tests/test_callback_auth.py pins closed explicitly."""
     monkeypatch.setenv("DEV_MODE", "true")
-    monkeypatch.delenv("INTERNAL_API_SECRET", raising=False)
+    for key in ("INTERNAL_API_SECRET", "GATEWAY_IDENTITY_SECRET", "ADMIN_API_INTERNAL_SECRET",
+                "RUNTIME_CALLBACK_SECRET", "MEETING_TOKEN_SECRET", "BOT_LEGACY_INTERNAL_SECRET",
+                "BOT_REDIS_ACL"):
+        monkeypatch.delenv(key, raising=False)
 
 
 # --- lifecycle.v1 goldens (the seam) ---------------------------------------------------
