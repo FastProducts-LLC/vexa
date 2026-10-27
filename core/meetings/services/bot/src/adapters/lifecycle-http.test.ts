@@ -4,6 +4,7 @@
  * Injects a fake `fetchImpl` that records every call and asserts:
  *   • the POST hits callbackUrl with `content-type: application/json` + `x-internal-secret`,
  *     and the body is the lifecycle.v1 event JSON verbatim (0.11 convention);
+ *   • `token` set → `authorization: Bearer <token>` (the bot's MeetingToken, C4); omitted → absent;
  *   • `internalSecret` omitted → no `x-internal-secret` header;
  *   • a transient failure (network throw + non-2xx) is RETRIED with backoff, then succeeds;
  *   • a permanent failure does NOT throw out of `emit` (the bot must not crash).
@@ -33,13 +34,14 @@ async function main(): Promise<void> {
   {
     const calls: Recorded[] = [];
     const fetchImpl: FetchLike = async (url, init) => { calls.push({ url, ...init }); return { ok: true, status: 200 }; };
-    const sink = createHttpLifecycleSink({ callbackUrl: 'http://meeting-api:8080/runtime/callback', internalSecret: 'SECRET', fetchImpl, sleep: noSleep });
+    const sink = createHttpLifecycleSink({ callbackUrl: 'http://meeting-api:8080/runtime/callback', internalSecret: 'SECRET', token: 'h.p.s', fetchImpl, sleep: noSleep });
     await sink.emit(EVENT);
     check('happy: exactly one POST', calls.length === 1, String(calls.length));
     check('happy: hits callbackUrl', calls[0]?.url === 'http://meeting-api:8080/runtime/callback', calls[0]?.url);
     check('happy: method POST', calls[0]?.method === 'POST', calls[0]?.method);
     check('happy: content-type json', calls[0]?.headers['content-type'] === 'application/json', JSON.stringify(calls[0]?.headers));
     check('happy: x-internal-secret header', calls[0]?.headers['x-internal-secret'] === 'SECRET', JSON.stringify(calls[0]?.headers));
+    check('happy: authorization bearer is the MeetingToken (C4)', calls[0]?.headers['authorization'] === 'Bearer h.p.s', JSON.stringify(calls[0]?.headers));
     check('happy: body is the lifecycle.v1 event verbatim', calls[0]?.body === JSON.stringify(EVENT), calls[0]?.body);
     check('happy: body round-trips to the event', JSON.stringify(JSON.parse(calls[0]!.body)) === JSON.stringify(EVENT));
   }
@@ -51,6 +53,7 @@ async function main(): Promise<void> {
     const sink = createHttpLifecycleSink({ callbackUrl: 'http://cb', fetchImpl, sleep: noSleep });
     await sink.emit(EVENT);
     check('no-secret: x-internal-secret absent', !('x-internal-secret' in (calls[0]?.headers ?? {})), JSON.stringify(calls[0]?.headers));
+    check('no-token: authorization absent', !('authorization' in (calls[0]?.headers ?? {})), JSON.stringify(calls[0]?.headers));
     check('no-secret: 204 counts as success (single attempt)', calls.length === 1, String(calls.length));
   }
 

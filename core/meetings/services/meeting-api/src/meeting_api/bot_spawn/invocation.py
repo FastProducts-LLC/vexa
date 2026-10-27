@@ -86,14 +86,21 @@ def mint_meeting_token(
     *,
     ttl_seconds: int = 7200,
     secret: Optional[str] = None,
+    connection_id: Optional[str] = None,
 ) -> str:
-    """Mint a stateless MeetingToken (HS256 JWT), signed with ``ADMIN_TOKEN`` (or ``secret``).
+    """Mint a stateless MeetingToken (HS256 JWT), signed with ``MEETING_TOKEN_SECRET`` (falling back
+    to ``ADMIN_TOKEN``) or ``secret``.
 
-    No token table — minted on demand, embedded in the invocation, re-verified at recording upload.
+    No token table — minted on demand, embedded in the invocation, re-verified at the lifecycle
+    callback and the recording upload. ``connection_id`` (the session uid) BINDS the token to one bot
+    run: callback_auth refuses a lifecycle event / upload for any other session (C4).
     """
-    secret = secret if secret is not None else os.environ.get("ADMIN_TOKEN")
+    if secret is None:
+        from ..trust_secrets import meeting_token_secret
+
+        secret = meeting_token_secret()
     if not secret:
-        raise ValueError("ADMIN_TOKEN not configured; cannot mint MeetingToken")
+        raise ValueError("MEETING_TOKEN_SECRET (or ADMIN_TOKEN) not configured; cannot mint MeetingToken")
     now = int(datetime.now(timezone.utc).timestamp())
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {
@@ -108,6 +115,8 @@ def mint_meeting_token(
         "exp": now + ttl_seconds,
         "jti": str(uuid.uuid4()),
     }
+    if connection_id:
+        payload["connection_id"] = connection_id
     header_b64 = _b64url(json.dumps(header, separators=(",", ":")).encode())
     payload_b64 = _b64url(json.dumps(payload, separators=(",", ":")).encode())
     signing_input = f"{header_b64}.{payload_b64}".encode("ascii")

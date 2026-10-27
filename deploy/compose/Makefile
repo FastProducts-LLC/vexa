@@ -65,12 +65,28 @@ stack-test-v010:
 ## then mints + prints an API key (via the idempotent bin/provision-token) with the URLs.
 up:
 	@$(MAKE) --no-print-directory _preflight
-	@[ -f .env ] || { echo "→ no .env found; seeding from .env.example"; cp .env.example .env; }
+	@$(MAKE) --no-print-directory _seed_env
 	$(COMPOSE) up -d --build
 	$(COMPOSE) build agent-worker  # profiles:[build-only] keeps it out of `up` — build it explicitly or first chat fails to spawn
 	@$(MAKE) --no-print-directory _bot_check
 	@$(MAKE) --no-print-directory _creds_check
 	@$(MAKE) --no-print-directory _access
+
+## _seed_env — seed .env from .env.example if absent, then fill every EMPTY stack secret with a random
+## value (the compose file has NO defaults for them and refuses to start while they are unset — C4/C5).
+## A value already set in .env is never touched.
+_seed_env:
+	@[ -f .env ] || { echo "→ no .env found; seeding from .env.example"; cp .env.example .env; }
+	@for k in ADMIN_TOKEN GATEWAY_IDENTITY_SECRET ADMIN_API_INTERNAL_SECRET RUNTIME_CALLBACK_SECRET MEETING_TOKEN_SECRET RUNTIME_API_TOKEN DB_PASSWORD MINIO_SECRET_KEY REDIS_PASSWORD NEXTAUTH_SECRET VEXA_DISPATCH_SIGNING_KEY; do \
+	   v=$$(grep -E "^$$k=" .env | head -1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$$//; s/[[:space:]]+$$//'); \
+	   if [ -z "$$v" ]; then \
+	     r=$$(openssl rand -hex 32 2>/dev/null || od -An -N32 -tx1 /dev/urandom | tr -d ' \n'); \
+	     [ -n "$$r" ] || { echo "✗ could not generate a random $$k — set it in .env"; exit 1; }; \
+	     if grep -qE "^$$k=" .env; then sed -i.bak -E "s|^$$k=.*|$$k=$$r|" .env && rm -f .env.bak; \
+	     else printf '%s=%s\n' "$$k" "$$r" >> .env; fi; \
+	     echo "→ generated a random $$k in .env"; \
+	   fi; \
+	 done
 
 ## _preflight — fail fast on a too-old Docker engine: agent workers mount workspaces via the Mounts
 ## API's named-volume Subpath, which needs engine ≥ v26 — an older engine fails every worker create

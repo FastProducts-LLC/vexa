@@ -131,6 +131,9 @@ meetingApi:
     type: ClusterIP
     port: 8080
   transcriptionServiceUrl: ""   # STT endpoint the spawned bot transcribes against (empty ⇒ capture only)
+  # C4 (temporary): "true" while browserImage is a stock vexaai/vexa-bot — the bot's own MeetingToken
+  # rides invocation.internalSecret; "false" for a bot built from this repo (it sends a bearer).
+  botLegacyInternalSecret: "true"
   minioSecure: "false"
   logLevel: "info"
   resources:

@@ -241,9 +241,10 @@ def test_05_recording_to_minio(stack):
     platform, native_id = "google_meet", f"rec-{uuid.uuid4().hex[:8]}"
     meeting_id, session_uid = _insert_meeting(stack, user_id, platform, native_id)
 
-    # The bot authenticates uploads with a MeetingToken (HS256, signed with ADMIN_TOKEN — the admin
-    # secret meeting-api mints AND verifies with, like main; INTERNAL_API_SECRET is a different concern).
-    token = mint_meeting_token(meeting_id, user_id, platform, native_id, secret=stack.admin_token)
+    # The bot authenticates uploads with its MeetingToken (HS256, MEETING_TOKEN_SECRET), bound to the
+    # session it uploads into (C4). A shared secret is not accepted; a token for another session is 403.
+    token = mint_meeting_token(meeting_id, user_id, platform, native_id, secret=stack.meeting_token_secret,
+                               connection_id=session_uid)
 
     chunk = _canonical_wav(b"gate-compose-recording-chunk-pcm-payload")
     fields = {
@@ -450,11 +451,11 @@ def test_03_real_bot_spawn_joining(stack):
 
         # Belt-and-suspenders: ensure the bot sits on THIS project's compose network so its lifecycle
         # callback (http://meeting-api:8080/…) + redis can resolve. The runtime already attaches it via
-        # DOCKER_NETWORK=${COMPOSE_PROJECT_NAME}_vexa (connect on an attached container is a no-op error,
+        # DOCKER_NETWORK=${COMPOSE_PROJECT_NAME}_bots (connect on an attached container is a no-op error,
         # swallowed). Named deterministically — the old any-`*_vexa` scan could attach the bot to ANOTHER
-        # stack's network on a shared host.
+        # stack's network on a shared host. NEVER the control-plane `_vexa` network (C4 split).
         from conftest import PROJECT
-        subprocess.run(["docker", "network", "connect", f"{PROJECT}_vexa", container_name],
+        subprocess.run(["docker", "network", "connect", f"{PROJECT}_bots", container_name],
                        capture_output=True, timeout=20)
 
         # PROOF (b): the meeting advances to `joining` — the bot's first lifecycle callback lands.

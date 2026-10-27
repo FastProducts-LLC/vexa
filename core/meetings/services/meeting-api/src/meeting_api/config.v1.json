@@ -4,9 +4,14 @@
  "keys": [
   {
    "key": "ADMIN_TOKEN",
-   "class": "required-explicit",
+   "class": "defaulted",
    "secret": true,
-   "description": "HS256-signs the per-spawn MeetingToken AND verifies the recordings upload — the same admin secret admin-api holds (ADMIN_API_TOKEN); unset, every POST /bots would 500, so the boot refuses instead (A4)"
+   "description": "DEPRECATED legacy MeetingToken key: used only when MEETING_TOKEN_SECRET is unset (with a warning). The boot refuses when neither is set (A4). compose no longer gives meeting-api the admin token (C4 split)",
+   "default": "(unset — then MEETING_TOKEN_SECRET must be set)",
+   "targets": [
+    "helm",
+    "lite"
+   ]
   },
   {
    "key": "DB_HOST",
@@ -78,9 +83,72 @@
   {
    "key": "INTERNAL_API_SECRET",
    "class": "defaulted",
-   "default": "(unset — the internal lifecycle-callback header is then not attached)",
+   "default": "(unset)",
    "secret": true,
-   "description": "shared secret for internal service-to-service calls (x-internal-secret on the self-driven lifecycle callback) AND the gateway trust edge: any request carrying x-user-* identity headers must present X-Gateway-Verified equal to it (unset -> such requests 503 unless DEV_MODE=true)"
+   "description": "DEPRECATED single internal secret: the fallback for GATEWAY_IDENTITY_SECRET, ADMIN_API_INTERNAL_SECRET and RUNTIME_CALLBACK_SECRET when those are unset (helm / lite still set only this). Never given to bots. compose sets the split secrets instead (C4)",
+   "targets": [
+    "helm",
+    "lite"
+   ]
+  },
+  {
+   "key": "GATEWAY_IDENTITY_SECRET",
+   "class": "defaulted",
+   "default": "(falls back to INTERNAL_API_SECRET)",
+   "secret": true,
+   "targets": [
+    "compose"
+   ],
+   "description": "the X-Gateway-Verified marker: any request carrying x-user-* identity headers must present it (constant-time); unset with no fallback ⇒ 503 outside DEV_MODE (C4 split — distinct from admin-api's internal key, never given to bots)"
+  },
+  {
+   "key": "ADMIN_API_INTERNAL_SECRET",
+   "class": "defaulted",
+   "default": "(falls back to INTERNAL_API_SECRET)",
+   "secret": true,
+   "targets": [
+    "compose"
+   ],
+   "description": "X-Internal-Secret meeting-api presents to admin-api /internal/* (bot-context, calendar configs); equals admin-api's INTERNAL_API_SECRET (C4 split)"
+  },
+  {
+   "key": "RUNTIME_CALLBACK_SECRET",
+   "class": "defaulted",
+   "default": "(falls back to INTERNAL_API_SECRET)",
+   "secret": true,
+   "targets": [
+    "compose"
+   ],
+   "description": "the X-Internal-Secret the runtime kernel stamps on RuntimeEvent callbacks; /runtime/callback refuses anything else outside DEV_MODE (C4 split)"
+  },
+  {
+   "key": "MEETING_TOKEN_SECRET",
+   "class": "defaulted",
+   "default": "(falls back to ADMIN_TOKEN, deprecated)",
+   "secret": true,
+   "targets": [
+    "compose"
+   ],
+   "description": "HS256 key of the per-spawn MeetingToken (bound to meeting_id + connection_id): the ONLY credential a bot holds; verified on the lifecycle callback and the recordings upload (C4 split)"
+  },
+  {
+   "key": "BOT_LEGACY_INTERNAL_SECRET",
+   "class": "defaulted",
+   "default": "false",
+   "targets": [
+    "compose",
+    "helm"
+   ],
+   "description": "TEMPORARY stock-bot compat: true puts the bot's own MeetingToken into invocation.internalSecret and accepts it from x-internal-secret (the stock vexaai/vexa-bot never reads invocation.token). Remove once a fork-built bot ships"
+  },
+  {
+   "key": "BOT_REDIS_ACL",
+   "class": "defaulted",
+   "default": "false",
+   "targets": [
+    "compose"
+   ],
+   "description": "true: every spawn gets a per-meeting Redis 7 ACL user (own channels only, write-only transcription_segments) instead of meeting-api's REDIS_URL credential; needs ACL SETUSER/DELUSER on REDIS_URL's user"
   },
   {
    "key": "DEV_MODE",

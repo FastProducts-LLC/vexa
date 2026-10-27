@@ -68,7 +68,21 @@ RUNTIME_URL = f"http://127.0.0.1:{RUNTIME_HOST_PORT}"
 ADMIN_TOKEN = "gate-admin-token"
 # C5: the runtime control-plane bearer — REQUIRED by the compose file (no default).
 RUNTIME_API_TOKEN = "gate-runtime-api-token"
-INTERNAL_API_SECRET = "gate-internal-secret"
+# C4 split: the identity marker the harness stamps as x-gateway-verified (kept under its old Python name
+# — every test imports INTERNAL_API_SECRET for that header) is GATEWAY_IDENTITY_SECRET in the stack.
+INTERNAL_API_SECRET = "gate-gateway-identity-secret"
+GATEWAY_IDENTITY_SECRET = INTERNAL_API_SECRET
+ADMIN_API_INTERNAL_SECRET = "gate-admin-api-internal-secret"
+RUNTIME_CALLBACK_SECRET = "gate-runtime-callback-secret"
+MEETING_TOKEN_SECRET = "gate-meeting-token-secret"
+# C4: the stack has NO default secrets any more — every one of these is `${VAR:?}` in the compose
+# file, so the gate pins throwaway values (never the old published placeholders, which meeting-api
+# refuses at boot).
+DB_PASSWORD = "gate-db-password"
+MINIO_SECRET_KEY = "gate-minio-secret-key"
+REDIS_PASSWORD = "gate-redis-password"
+NEXTAUTH_SECRET = "gate-nextauth-secret"
+VEXA_DISPATCH_SIGNING_KEY = "gate-dispatch-signing-key"
 MINIO_BUCKET = "vexa"
 
 SERVICES = ["redis", "postgres", "minio", "admin-api", "runtime", "meeting-api", "gateway"]
@@ -110,12 +124,22 @@ def _stack_env() -> dict:
         # PUBLISHED :vX.Y.Z tag (with COMPOSE_NO_BUILD=1), so the proof runs against the artifacts.
         "IMAGE_TAG": os.getenv("IMAGE_TAG", "dev"),
         # Pin the project name into the interpolation env too (not just `-p`), so the compose's
-        # DOCKER_NETWORK=${COMPOSE_PROJECT_NAME}_vexa resolves to the SAME network compose creates —
+        # DOCKER_NETWORK=${COMPOSE_PROJECT_NAME}_bots resolves to the SAME network compose creates —
         # the bot must be spawned onto it to reach meeting-api/redis.
         "COMPOSE_PROJECT_NAME": PROJECT,
         "ADMIN_TOKEN": ADMIN_TOKEN,
-        "INTERNAL_API_SECRET": INTERNAL_API_SECRET,
+        "GATEWAY_IDENTITY_SECRET": GATEWAY_IDENTITY_SECRET,
+        "ADMIN_API_INTERNAL_SECRET": ADMIN_API_INTERNAL_SECRET,
+        "RUNTIME_CALLBACK_SECRET": RUNTIME_CALLBACK_SECRET,
+        "MEETING_TOKEN_SECRET": MEETING_TOKEN_SECRET,
+        # The real-bot lane runs the STOCK vexaai/vexa-bot image → exercise the compat path.
+        "BOT_LEGACY_INTERNAL_SECRET": "true",
         "RUNTIME_API_TOKEN": RUNTIME_API_TOKEN,
+        "DB_PASSWORD": DB_PASSWORD,
+        "MINIO_SECRET_KEY": MINIO_SECRET_KEY,
+        "REDIS_PASSWORD": REDIS_PASSWORD,
+        "NEXTAUTH_SECRET": NEXTAUTH_SECRET,
+        "VEXA_DISPATCH_SIGNING_KEY": VEXA_DISPATCH_SIGNING_KEY,
         "MINIO_BUCKET": MINIO_BUCKET,
         "BROWSER_IMAGE": os.getenv("BROWSER_IMAGE", "vexaai/vexa-bot:v012"),
         "API_GATEWAY_HOST_PORT": GATEWAY_PORT,
@@ -186,6 +210,7 @@ class Stack:
     runtime: str = RUNTIME_URL
     admin_token: str = ADMIN_TOKEN
     internal_secret: str = INTERNAL_API_SECRET
+    meeting_token_secret: str = MEETING_TOKEN_SECRET
     bucket: str = MINIO_BUCKET
 
     # ---- exec helpers (the docker CLI is our DB + S3 probe; no extra client deps) ----
@@ -205,7 +230,7 @@ class Stack:
         """List minio object keys under a prefix via the mc client baked into the minio image."""
         # alias is set lazily; ignore the error if it already exists.
         self.exec("minio", "mc", "alias", "set", "local", "http://localhost:9000",
-                  "vexa-access-key", "vexa-secret-key", check=False)
+                  "vexa-access-key", MINIO_SECRET_KEY, check=False)
         out = self.exec("minio", "mc", "ls", "--recursive", f"local/{self.bucket}/{prefix}", check=False)
         keys = []
         for line in out.splitlines():
@@ -215,14 +240,16 @@ class Stack:
         return keys
 
     def redis_cli(self, *args: str) -> str:
-        return self.exec("redis", "redis-cli", *args, check=False)
+        # C4: Redis ACL users; the control plane is `vexa-svc` (the `default` user is off).
+        return self.exec("redis", "redis-cli", "--no-auth-warning", "--user", "vexa-svc", "--pass",
+                         REDIS_PASSWORD, *args, check=False)
 
     def logs(self, service: str, *, tail: int = 400) -> str:
         return _compose("logs", "--no-color", "--tail", str(tail), service, check=False).stdout
 
     def redis_host_url(self) -> str:
         port = self.redis_host_port
-        return f"redis://127.0.0.1:{port}/0"
+        return f"redis://vexa-svc:{REDIS_PASSWORD}@127.0.0.1:{port}/0"
 
     redis_host_port: int = 0
 

@@ -4,6 +4,10 @@
  * Implements the `LifecycleSink` port by POSTing each lifecycle.v1 event verbatim to the
  * meeting-api callback URL (`inv.meetingApiCallbackUrl`). 0.11 convention:
  *   • headers: `content-type: application/json` + (if set) `x-internal-secret: <internalSecret>`
+ *     + (if set) `authorization: Bearer <token>` — the bot's own MeetingToken (invocation.v1 `token`).
+ *     meeting-api authenticates the callback with that token ONLY, and only for the token's own
+ *     `connection_id` (C4). It no longer hands bots a deployment secret; `internalSecret` is set only
+ *     in its BOT_LEGACY_INTERNAL_SECRET compat mode, where it carries the same MeetingToken.
  *   • body: the lifecycle.v1 event JSON, as-is (no envelope)
  *
  * L3-testable via an INJECTED `fetchImpl` (defaults to Node 22's native `fetch` — NO new dep).
@@ -29,6 +33,10 @@ export interface HttpLifecycleSinkOptions {
   callbackUrl: string;
   /** SECRET — sent as `x-internal-secret` when present (0.11 internal auth). */
   internalSecret?: string;
+  /** SECRET — the bot's MeetingToken (invocation.v1 `token`), sent as `authorization: Bearer` when
+   *  present. meeting-api verifies it (HS256, MEETING_TOKEN_SECRET) and binds it to the event's
+   *  connection_id (C4). */
+  token?: string;
   /** Injected for the L3 test; defaults to Node 22's native global `fetch`. */
   fetchImpl?: FetchLike;
   /** Max POST attempts (1 try + retries). Default 3. */
@@ -47,6 +55,7 @@ export function createHttpLifecycleSink(opts: HttpLifecycleSinkOptions): Lifecyc
   const {
     callbackUrl,
     internalSecret,
+    token,
     fetchImpl = globalThis.fetch as unknown as FetchLike,
     retries = 3,
     backoffMs = 200,
@@ -55,6 +64,7 @@ export function createHttpLifecycleSink(opts: HttpLifecycleSinkOptions): Lifecyc
 
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (internalSecret) headers['x-internal-secret'] = internalSecret;
+  if (token) headers['authorization'] = `Bearer ${token}`;
 
   const attempts = Math.max(1, retries);
 

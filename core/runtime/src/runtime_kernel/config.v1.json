@@ -60,6 +60,27 @@
    "description": "uvicorn/app log level"
   },
   {
+   "key": "INTERNAL_API_SECRET",
+   "class": "defaulted",
+   "default": "(unset — RuntimeEvent callbacks then carry no X-Internal-Secret header)",
+   "secret": true,
+   "description": "DEPRECATED: fallback for RUNTIME_CALLBACK_SECRET when unset (helm / lite). Stamped as X-Internal-Secret on RuntimeEvent callbacks",
+   "targets": [
+    "helm",
+    "lite"
+   ]
+  },
+  {
+   "key": "RUNTIME_CALLBACK_SECRET",
+   "class": "defaulted",
+   "default": "(falls back to INTERNAL_API_SECRET)",
+   "secret": true,
+   "targets": [
+    "compose"
+   ],
+   "description": "stamped as X-Internal-Secret on every RuntimeEvent callback the kernel posts to a workload's callbackUrl, so meeting-api can authenticate workload evidence (C4 split: only runtime + meeting-api hold it)"
+  },
+  {
    "key": "REDIS_URL",
    "class": "capability",
    "capability": "scheduler",
@@ -312,11 +333,5 @@
     }
    }
   }
- },
- "surface_only": [
-  {
-   "key": "INTERNAL_API_SECRET",
-   "reason": "set on the runtime by compose/helm/lite but never read by runtime code (the internal-call secret is a gateway↔admin-api↔meeting-api concern) — documented drift surfaced by gate:config-contract; candidate for a deploy-surface cleanup"
-  }
- ]
+ }
 }

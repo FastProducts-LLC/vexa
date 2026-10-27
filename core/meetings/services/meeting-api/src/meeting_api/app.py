@@ -105,7 +105,8 @@ def create_app(
     app.state.webhook_sink = webhook_sink
     # The lifecycle callback publishes each persisted FSM advance to bm:meeting:{id}:status so the
     # gateway /ws (which SUBSCRIBEs that channel) forwards a ws.v1 BotStatus frame to the dashboard.
-    _mount_lifecycle(app, sink, meeting_repo, webhook_sink, redis, transcript_finalizer)
+    _mount_lifecycle(app, sink, meeting_repo, webhook_sink, redis, transcript_finalizer,
+                     token_secret=token_secret)
 
     # --- bot_spawn: POST /bots (invocation.v1 + runtime.v1) ---
     app.include_router(_bot_spawn.build_router(meeting_repo, runtime))
@@ -152,6 +153,7 @@ def _mount_lifecycle(
     webhook_sink: "object" = None,
     redis: "object" = None,
     transcript_finalizer: "object" = None,
+    token_secret: Optional[str] = None,
 ) -> None:
     """Register the lifecycle.v1 callback route on the unified app (the lifecycle receiver's
     ``/bots/internal/callback/lifecycle`` handler, sharing the app's TraceMiddleware).
@@ -171,6 +173,7 @@ def _mount_lifecycle(
     import jsonschema
 
     from .lifecycle.machine import IllegalTransition, TransitionSource
+    from .callback_auth import check_bot_binding, check_runtime_callback, verify_bot_credential
     from .lifecycle.receiver import conforms
     from .lifecycle.webhook import build_status_change_envelope, build_typed_envelope
     from .obs import log_event
@@ -318,6 +321,16 @@ def _mount_lifecycle(
                 log_event("transcript_finalize_failed", audience="system", level="warning",
                           span="lifecycle.callback",
                           fields={"meeting_id": meeting_row.get("id"), "error": str(e)})
+        # C4: the run is over — delete the bot's per-meeting Redis ACL user (BOT_REDIS_ACL). Best-effort.
+        if (
+            not change.no_op
+            and rec.status is not None
+            and rec.status.value in ("completed", "failed")
+            and rec.connection_id
+        ):
+            from .bot_spawn.service import _revoke_bot_redis
+
+            await _revoke_bot_redis(rec.connection_id)
         # Build the TYPED event the transition maps to (meeting.started on active,
         # meeting.completed with the post-meeting envelope on completion, bot.failed on terminal
         # failure) — additive alongside meeting.status_change, never instead of it. Built AFTER the
@@ -468,7 +481,19 @@ def _mount_lifecycle(
 
     @app.post("/bots/internal/callback/lifecycle")
     async def lifecycle_callback(request: Request) -> JSONResponse:
-        body = await request.json()
+        # C4 trust edge: only the bot itself — its MeetingToken, bound to its own session — may drive
+        # the FSM. The credential is checked BEFORE the body is parsed, the binding right after.
+        verdict, claims = verify_bot_credential(request.headers, token_secret=token_secret)
+        if verdict is None:
+            try:
+                body = await request.json()
+            except Exception:  # noqa: BLE001 — a non-JSON body cannot name a session
+                body = None
+            verdict = check_bot_binding(claims, body)
+        if verdict is not None:
+            log_event("lifecycle_callback_refused", audience="system", level="warning",
+                      span="lifecycle.callback", fields={"status": verdict[0], "detail": verdict[1]})
+            return JSONResponse(status_code=verdict[0], content={"detail": verdict[1]})
         status_code, content = await _apply_lifecycle_event(
             body, transition_source=TransitionSource.BOT_CALLBACK
         )
@@ -498,6 +523,13 @@ def _mount_lifecycle(
         completed`` is illegal for a bot-driven edge). The direct in-process call advances the SAME FSM
         instance, and the runtime-destroy source forces the terminal edge on real teardown evidence, so
         the meeting reaches terminal, the reaper stops, and the copilot ``session_end`` reap fires."""
+        # C4 trust edge: only the runtime kernel (x-internal-secret == INTERNAL_API_SECRET) may
+        # post workload evidence — a forged `destroyed` would otherwise fail/complete a live meeting.
+        verdict = check_runtime_callback(request.headers)
+        if verdict is not None:
+            log_event("runtime_callback_refused", audience="system", level="warning",
+                      span="runtime.callback", fields={"status": verdict[0], "detail": verdict[1]})
+            return JSONResponse(status_code=verdict[0], content={"detail": verdict[1]})
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001

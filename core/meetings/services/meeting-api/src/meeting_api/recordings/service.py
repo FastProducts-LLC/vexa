@@ -200,9 +200,12 @@ def _verify_meeting_token(token: str, *, secret: Optional[str] = None) -> dict[s
     import json
     import os
 
-    secret = secret if secret is not None else os.environ.get("ADMIN_TOKEN")
+    if secret is None:
+        from ..trust_secrets import meeting_token_secret
+
+        secret = meeting_token_secret()
     if not secret:
-        raise ValueError("ADMIN_TOKEN not configured; cannot verify MeetingToken")
+        raise ValueError("MEETING_TOKEN_SECRET (or ADMIN_TOKEN) not configured; cannot verify MeetingToken")
     try:
         header_b64, payload_b64, sig_b64 = token.split(".")
     except ValueError:

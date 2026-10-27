@@ -325,7 +325,17 @@
       "key": "VEXA_INTERNAL_API_SECRET",
       "class": "defaulted",
       "default": "(unset)",
-      "description": "Lane M: X-Internal-Secret for the admin-api membership-index internal edge (same value the gateway uses)",
+      "description": "X-Internal-Secret for the admin-api internal edge (Lane M) and agent-api's own internal tier (/invocations, /events, admin overview); compose gives it ADMIN_API_INTERNAL_SECRET's value (C4 split)",
+      "targets": [
+        "compose"
+      ]
+    },
+    {
+      "key": "VEXA_GATEWAY_IDENTITY_SECRET",
+      "class": "defaulted",
+      "default": "(falls back to VEXA_INTERNAL_API_SECRET)",
+      "secret": true,
+      "description": "the X-Gateway-Verified marker agent-api requires on identity-bearing requests and stamps on its own identity-scoped meeting-api hops (C4 split: the gateway's GATEWAY_IDENTITY_SECRET)",
       "targets": [
         "compose"
       ]

@@ -54,7 +54,9 @@ async function uploadMaster(inv: Invocation, master: RecordingMaster, log: (m: s
     const sessionUid = inv.connectionId ?? inv.nativeMeetingId ?? master.key;
     const svc = new RecordingService(meetingId, sessionUid);
     await svc.writeBlob(Buffer.from(master.bytes), master.format);
-    await svc.upload(url, inv.internalSecret ?? '');
+    // C4: the upload authenticates with the bot's own MeetingToken (bound to this session); meeting-api
+    // no longer accepts a shared secret here. internalSecret is only a fallback for an older meeting-api.
+    await svc.upload(url, inv.token ?? inv.internalSecret ?? '');
     await svc.cleanup().catch(() => { /* best-effort */ });
     log(`recording: uploaded master ${master.key} (${master.bytes.length}B, ${master.chunks} chunks, ${master.format})`);
   } catch (e) {
