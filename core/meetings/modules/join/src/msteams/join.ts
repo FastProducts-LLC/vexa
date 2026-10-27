@@ -21,6 +21,7 @@ import {
   meetingOriginHost,
   redactUrl,
 } from "./auth-redirect";
+import { assertAllowedMeetingUrl } from "../shared/meeting-url-allowlist";
 
 // NOTE vs the monolith: the WebRTC remote-audio hook and the voice-agent
 // virtual-camera flow are RECORDING/HOST concerns and stay outside this brick.
@@ -169,6 +170,7 @@ export async function joinMicrosoftTeams(
   // `?p=` query, and bot logs are read by humans and shipped off-box. Same rule the redirect
   // errors already follow — the query is dropped whole rather than filtered key by key.
   log(`Step 1: Navigating to Teams meeting: ${redactUrl(meetingUrl)}`);
+  assertAllowedMeetingUrl(meetingUrl, "teams"); // finding #1 — defence in depth
   await page.goto(meetingUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForTimeout(500);
 

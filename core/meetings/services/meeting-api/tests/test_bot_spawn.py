@@ -721,8 +721,10 @@ def test_post_bots_jitsi_localhost_and_ipv6_422(monkeypatch):
 
 
 def test_post_bots_jitsi_hostname_url_accepted(monkeypatch):
-    """Negative control: a real https hostname deployment sails through the guard → 201."""
+    """Negative control: a self-hosted deployment the operator DECLARED (VEXA_JITSI_HOSTS) sails
+    through the meeting-URL allowlist → 201 (finding #1: undeclared hosts are refused)."""
     monkeypatch.setenv("ADMIN_TOKEN", SECRET)
+    monkeypatch.setenv("VEXA_JITSI_HOSTS", "meet.example.org")
     r = _client().post("/bots", headers=HEADERS,
                        json={"platform": "jitsi", "native_meeting_id": "Room",
                              "meeting_url": "https://meet.example.org/room"})
@@ -785,12 +787,13 @@ def test_post_bots_url_only_meeting_is_stop_addressable(monkeypatch):
 
 
 def test_post_bots_underivable_url_422_no_row(monkeypatch):
-    """Row 3: https URL that passes the SSRF guard but yields no id → typed 422, nothing persisted."""
+    """Row 3: https URL that passes the meeting-URL allowlist but yields no id → typed 422, nothing
+    persisted."""
     _spawn_env(monkeypatch)
     repo = InMemoryMeetingRepo()
     r = _client(repo).post("/bots", headers=HEADERS,
                            json={"platform": "google_meet",
-                                 "meeting_url": "https://example.com/not-a-meet-link"})
+                                 "meeting_url": "https://meet.google.com/not-a-meet-link"})
     assert r.status_code == 422, r.text
     assert "native_meeting_id" in r.json()["detail"]
     assert repo._meetings == {}  # never persist the '' orphan
@@ -822,8 +825,10 @@ def test_post_bots_platform_url_mismatch_422(monkeypatch):
 
 
 def test_post_bots_url_only_jitsi_derives_room(monkeypatch):
-    """F2: jitsi derivation accepted — the room (+host scope) becomes the native id, URL rides along."""
+    """F2: jitsi derivation accepted — the room (+host scope) becomes the native id, URL rides along.
+    The self-hosted host must be declared in VEXA_JITSI_HOSTS (meeting-URL allowlist, finding #1)."""
     _spawn_env(monkeypatch)
+    monkeypatch.setenv("VEXA_JITSI_HOSTS", "meet.example.org")
     repo = InMemoryMeetingRepo()
     r = _client(repo).post("/bots", headers=HEADERS,
                            json={"meeting_url": "https://meet.example.org/daily"})
