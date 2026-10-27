@@ -133,7 +133,8 @@
    "class": "defaulted",
    "default": "false",
    "targets": [
-    "compose"
+    "compose",
+    "helm"
    ],
    "description": "TEMPORARY stock-bot compat: true puts the bot's own MeetingToken into invocation.internalSecret and accepts it from x-internal-secret (the stock vexaai/vexa-bot never reads invocation.token). Remove once a fork-built bot ships"
   },
