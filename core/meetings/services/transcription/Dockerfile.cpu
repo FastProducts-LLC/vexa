@@ -15,7 +15,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl libsndfile1 ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir uv==0.9.22
-RUN uv python install 3.12
 
 WORKDIR /app
 
