@@ -5,11 +5,11 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4 # version comes from package.json "packageManager"
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6 # version comes from package.json "packageManager"
+      - uses: actions/setup-node@v7
         with: { node-version: 22, cache: pnpm } # pnpm 11.7 requires Node >= 22.13
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.3.2
       # CI runners have no GPU: skip onnxruntime-node's postinstall CUDA EP download — it is
       # large, raced across the two resolved onnxruntime versions, and flaked main's first run
       # (ENOENT in /tmp cleanup). The CPU binaries tests use are bundled in the package itself.
