@@ -6,6 +6,7 @@
  * observes state through hooks; recording, transcription, Redis, and the
  * meeting-api callbacks all live OUTSIDE this boundary.
  */
+import { assertAllowedMeetingUrl } from "./shared/meeting-url-allowlist";
 import type { Page } from "playwright";
 import { joinGoogleMeeting } from "./googlemeet/join";
 import { waitForGoogleMeetingAdmission, checkForGoogleAdmissionSilent } from "./googlemeet/admission";
@@ -58,21 +59,11 @@ export interface JoinOptions {
   hooks?: Partial<Hooks>;
 }
 
-/** Infer the platform from the meeting URL. Throws on an unrecognized host. */
+/** Infer the platform from the meeting URL's host (allowlisted hosts only, matched on a dot
+ *  boundary — never a substring). White-label Zoom portals and self-hosted Jitsi deployments are
+ *  not inferable: the embedder passes `platform` explicitly. Throws on an unrecognized host. */
 export function resolvePlatform(meetingUrl: string): Platform {
-  if (meetingUrl.includes("meet.google.com")) return "google_meet";
-  if (meetingUrl.includes("teams.microsoft.com") || meetingUrl.includes("teams.live.com")) return "teams";
-  // Canonical zoom.us / *.zoom.us only — white-label portals (LFX etc.) can't be
-  // inferred from the URL; the embedder passes platform: "zoom" explicitly.
-  // Same rule for Jitsi: only the canonical public deployments are inferable —
-  // a self-hosted Jitsi lives on an arbitrary host, so the embedder passes
-  // platform: "jitsi" explicitly.
-  try {
-    const host = new URL(meetingUrl).hostname;
-    if (host === "zoom.us" || host.endsWith(".zoom.us")) return "zoom";
-    if (host === "meet.jit.si" || host === "8x8.vc" || host.endsWith(".8x8.vc")) return "jitsi";
-  } catch { /* fall through to throw below */ }
-  throw new Error(`Cannot infer platform from meeting URL: ${meetingUrl}`);
+  return assertAllowedMeetingUrl(meetingUrl);
 }
 
 /**
@@ -143,6 +134,7 @@ export { joinGoogleMeeting, waitForGoogleMeetingAdmission, checkForGoogleAdmissi
 // (AuthSessionError, an AdmissionError subclass) as the permanent `auth_session_missing` — never
 // collapsed into a transient (retried) `join_failure` (G1).
 export { AdmissionError } from "./shared/admission";
+export { assertAllowedMeetingUrl, MeetingUrlNotAllowedError } from "./shared/meeting-url-allowlist";
 export type { AdmissionOutcome } from "./shared/admission";
 export { AuthSessionError } from "./googlemeet/join";
 export { joinMicrosoftTeams, waitForTeamsMeetingAdmission, checkForTeamsAdmissionSilent, prepareForTeamsRecording, leaveMicrosoftTeams, startTeamsRemovalMonitor };

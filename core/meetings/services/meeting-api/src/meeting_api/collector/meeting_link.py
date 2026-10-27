@@ -11,17 +11,22 @@ Id formats (mirrors the dashboard join-form):
   * google_meet → ``abc-defg-hij``
   * zoom        → 9–11 digits
   * teams       → the ``19:meeting_…@thread.v2`` thread id, or the ``/meet/<id>`` short-link segment
-  * jitsi       → the room name (the URL's path segment). Hosts: meet.jit.si and
-                  ``VEXA_JITSI_HOSTS``-declared deployments always; *jitsi* / meet-labelled
-                  hosts on pasted links only. The room name is deployment-scoped, so the raw
-                  URL rides alongside as ``meeting_url`` — never reconstructed from the id.
+  * jitsi       → the room name (the URL's path segment). Hosts: meet.jit.si, 8x8.vc and the
+                  ``VEXA_JITSI_HOSTS``-declared deployments (``meeting_url_policy``). The room
+                  name is deployment-scoped, so the raw URL rides alongside as ``meeting_url`` —
+                  never reconstructed from the id.
+
+Every URL must pass ``meeting_url_policy.check_meeting_url`` (the shared allowlist, security
+finding #1) before an id is extracted; the old substring host checks accepted
+``meet.google.com.evil.tld``, any host containing "zoom", and any ``meet.*`` host as jitsi.
 """
 from __future__ import annotations
 
-import os
 import re
 from typing import Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlsplit
+
+from ..meeting_url_policy import MeetingUrlRejected, check_meeting_url
 
 _GMEET_ID = re.compile(r"^[a-z]{3}-[a-z]{4}-[a-z]{3}$")
 _ZOOM_ID = re.compile(r"\d{9,11}")
@@ -32,24 +37,14 @@ _TEAMS_SHORT = re.compile(r"/meet/([^/?#]+)", re.IGNORECASE)
 _JITSI_ROOM = re.compile(r"^[^/?#\s]+$")
 
 
-def _configured_jitsi_hosts() -> set[str]:
-    """Deployment-declared Jitsi hostnames (``VEXA_JITSI_HOSTS``, comma-separated) — for
-    self-hosted deployments whose hostname carries neither "jitsi" nor a "meet" label. A
-    listed host is as explicit as meet.jit.si, so it is honoured in EVERY mode, including
-    the calendar (ICS) free-text scan."""
-    raw = os.getenv("VEXA_JITSI_HOSTS", "")
-    return {h.strip().lower() for h in raw.split(",") if h.strip()}
-
-
 def parse_meeting_url(raw: str, *, generic_hosts: bool = True) -> Optional[tuple[str, str]]:
     """Parse a pasted meeting URL (or bare id) → ``(platform, native_meeting_id)``, or ``None``
     when nothing valid can be extracted. Accepts the same inputs the terminal's
     ``parseMeetingInput`` accepts, so a link that validates client-side also validates here.
 
-    ``generic_hosts`` widens jitsi inference to the self-hosted conventions (a host containing
-    "jitsi", or a bare ``meet.*`` host) — right for a DELIBERATELY pasted link, too loose for the
-    ICS free-text scan (``find_meeting_link`` passes False so a calendar full of arbitrary links
-    never imports a non-meeting as a jitsi room)."""
+    ``generic_hosts`` is accepted for compatibility and no longer widens anything: jitsi hosts are
+    the allowlisted ones (meet.jit.si, 8x8.vc, ``VEXA_JITSI_HOSTS``) for pasted links and the ICS
+    scan alike (finding #1 — the old "jitsi"/``meet.*`` naming heuristic accepted any such host)."""
     value = (raw or "").strip()
     if not value:
         return None
@@ -58,18 +53,22 @@ def parse_meeting_url(raw: str, *, generic_hosts: bool = True) -> Optional[tuple
     if _GMEET_ID.match(value.lower()):
         return ("google_meet", value.lower())
 
-    parsed = urlparse(value)
-    host = (parsed.hostname or "").lower()
-    if host:
-        if "meet.google.com" in host:
+    if "://" in value or value.lower().startswith(("http:", "https:")):
+        try:
+            url, platform = check_meeting_url(value)
+        except MeetingUrlRejected:
+            return None
+        parsed = urlsplit(url)
+        host = parsed.hostname or ""
+        if platform == "google_meet":
             code = next((p for p in reversed(parsed.path.split("/")) if p), "").lower()
             return ("google_meet", code) if _GMEET_ID.match(code) else None
-        if "zoom" in host:
+        if platform == "zoom":
             m = _ZOOM_ID.search(parsed.path) or _ZOOM_ID.search(parsed.query)
             return ("zoom", m.group(0)) if m else None
-        if "teams.microsoft.com" in host or "teams.live.com" in host:
+        if platform == "teams":
             # Classic deep link carries the thread id (…/l/meetup-join/19:meeting_…@thread.v2).
-            thread = _TEAMS_THREAD.search(unquote(value))
+            thread = _TEAMS_THREAD.search(unquote(url))
             if thread:
                 return ("teams", thread.group(0))
             # New short meeting link: teams.microsoft.com/meet/<id>?p=<passcode>.
@@ -77,34 +76,18 @@ def parse_meeting_url(raw: str, *, generic_hosts: bool = True) -> Optional[tuple
             if short:
                 return ("teams", short.group(1))
             return None
-        # Jitsi: the canonical public deployment, plus (for a deliberately pasted link) the common
-        # self-hosted conventions — a host containing "jitsi", or a bare ``meet.*`` host (jitsi's
-        # own recommended naming). Known platforms are matched ABOVE, so this only fires for
-        # unclaimed hosts. The room is the path's single segment, kept EXACTLY as it appears in
-        # the URL (case + percent-encoding preserved) — the native id is embedded back into the
-        # construct-URL template and the DELETE path param, so it must stay URL-safe; decoding
-        # here would corrupt rooms with encoded characters. Callers keep the raw URL alongside
-        # (``meeting_url``) so a self-hosted room joins on ITS deployment, not the template's.
-        is_jitsi_host = (
-            host == "meet.jit.si"
-            or host in _configured_jitsi_hosts()     # deployment-declared (VEXA_JITSI_HOSTS)
-            # Naming HEURISTICS — pasted-link-only (a deliberate user action): a host naming
-            # jitsi, or a "meet" hostname LABEL anywhere (meet.example.org, eu.meet.example.org —
-            # jitsi's recommended naming, regionalized). Both are too loose for the ICS scan,
-            # where an event description full of arbitrary links (jitsi.github.io docs, vendor
-            # meet.* products) must not import as joinable rooms — there, only the explicit
-            # hosts above count; VEXA_JITSI_HOSTS is the opt-in.
-            or (generic_hosts and ("jitsi" in host or "meet" in host.split(".")))
-        )
-        if is_jitsi_host:
+        if platform == "jitsi":
+            # The room is the path's single segment, kept EXACTLY as it appears in the URL (case +
+            # percent-encoding preserved) — the native id is embedded back into the DELETE path
+            # param, so it must stay URL-safe; decoding would corrupt rooms with encoded
+            # characters. Callers keep the raw URL alongside (``meeting_url``) so a self-hosted
+            # room joins on ITS deployment.
             room = parsed.path.strip("/")
             if not room or not _JITSI_ROOM.match(room):
                 return None
-            # A jitsi room name is deployment-scoped, so the native id embeds the host for
-            # every non-canonical deployment (room@host — jitsi's own XMPP identity shape).
-            # A bare room would make meet.jit.si/daily and video.corp/daily collide on every
-            # (platform, native_meeting_id) key: duplicate checks, calendar adoption, MCP
-            # idempotency. meet.jit.si keeps the bare room (canonical, unambiguous).
+            # A jitsi room name is deployment-scoped, so the native id embeds the host for every
+            # non-canonical deployment (room@host — jitsi's own XMPP identity shape). meet.jit.si
+            # keeps the bare room (canonical, unambiguous).
             return ("jitsi", room if host == "meet.jit.si" else f"{room}@{host}")
         return None
 
@@ -122,9 +105,7 @@ def find_meeting_link(text: str) -> Optional[tuple[str, str, str]]:
         return None
     for m in re.finditer(r"https?://[^\s<>\"']+", text):
         url = m.group(0).rstrip(").,;")
-        # Free-text scan: hold jitsi to the explicit hosts (meet.jit.si + VEXA_JITSI_HOSTS) —
-        # a calendar description is full of arbitrary links, and the pasted-link naming
-        # heuristics (*jitsi* / ``meet.*``) would misread them as rooms.
+        # Free-text scan: only allowlisted meeting hosts (meeting_url_policy) are recognised.
         parsed = parse_meeting_url(url, generic_hosts=False)
         if parsed:
             return (parsed[0], parsed[1], url)

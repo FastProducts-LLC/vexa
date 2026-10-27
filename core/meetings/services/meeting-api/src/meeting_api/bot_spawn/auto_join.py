@@ -46,6 +46,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Optional
 
+from ..meeting_url_policy import MeetingUrlRejected
 from ..obs import log_event
 from ..service_authority import (
     ServiceAuthorityDenied,
@@ -358,6 +359,10 @@ async def auto_join_tick(
             continue
         except SpawnFailed as e:
             await _stamp_error(row, str(e) or "bot workload failed to start")
+            continue
+        except MeetingUrlRejected as e:
+            # finding #1 — a stored link that is not on the meeting-URL allowlist never reaches a bot
+            await _stamp_error(row, f"meeting link rejected: {e}")
             continue
         counters["spawned"] += 1
         if data.get("auto_join_error"):

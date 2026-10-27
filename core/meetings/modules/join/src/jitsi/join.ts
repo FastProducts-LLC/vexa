@@ -8,6 +8,7 @@ import {
   jitsiJoinButtonSelector,
   jitsiGuestEntryTexts,
 } from "./selectors";
+import { assertAllowedMeetingUrl } from "../shared/meeting-url-allowlist";
 
 // NOTE vs the other platforms: Jitsi Meet is SELF-HOSTABLE — meet.jit.si is just
 // the canonical public deployment. The join layer therefore never rewrites the
@@ -141,6 +142,7 @@ export async function joinJitsiMeeting(
   // admission wait recognizes the lobby even when the DOM shows no lobby affordances (#592).
   attachMembersOnlyWatch(page);
 
+  assertAllowedMeetingUrl(meetingUrl, "jitsi"); // finding #1 — defence in depth
   const navUrl = buildJitsiMeetingUrl(meetingUrl, { botName });
   log(`[Jitsi] Navigating to: ${navUrl}`);
   await page.goto(navUrl, { waitUntil: "domcontentloaded", timeout: 60000 });

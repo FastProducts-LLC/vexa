@@ -30,6 +30,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from ..config_preflight import CONFIG_FAULT_KINDS, cached_probe_verdict
+from ..meeting_url_policy import MeetingUrlRejected, check_meeting_url
 from ..obs import log_event
 from ..service_authority import (
     AllowAllServiceAuthority,
@@ -411,10 +412,15 @@ async def request_bot(
     means no cap was provided, so no pre-check.
     """
     authority = authority or AllowAllServiceAuthority()
-    # 1. URL.
+    # 1. URL — and the meeting-URL allowlist backstop (finding #1): whichever path reached here
+    #    (POST /bots, auto-join of a stored planned meeting, a future caller), the URL the bot's
+    #    browser will navigate is re-checked BEFORE any DB write. Raises MeetingUrlRejected (→ 422).
     constructed_url = meeting_url or construct_meeting_url(
         platform, native_meeting_id, teams_base_host=teams_base_host
     )
+    if constructed_url is None:
+        raise MeetingUrlRejected(f"no meeting URL for platform '{platform}' — provide meeting_url")
+    constructed_url, _ = check_meeting_url(constructed_url, platform=platform)
     # The address the BOT gets, which is not the address we STORE: the passcode rides on the join
     # URL (Teams' own `?p=`) and stays off `data.constructed_meeting_url`, which every
     # MeetingResponse reads back. Both derive from the same constructed URL, so they address the

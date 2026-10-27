@@ -31,25 +31,30 @@ class TestParseJitsi:
     def test_multi_segment_path_rejected(self):
         assert parse_meeting_url("https://meet.jit.si/a/b") is None
 
-    def test_self_hosted_jitsi_host_inferred(self):
-        # A host naming jitsi is a jitsi deployment; the caller keeps the raw URL as
-        # meeting_url so the bot joins on that host, not the meet.jit.si template.
-        # The native id embeds the host (room@host) — a jitsi room is deployment-scoped,
-        # so same-named rooms on different deployments never share an identity key.
-        assert parse_meeting_url("https://jitsi.example.org/MyRoom") == ("jitsi", "MyRoom@jitsi.example.org")
+    def test_undeclared_self_hosted_jitsi_refused(self, monkeypatch):
+        # Finding #1: the old naming heuristic (a host containing "jitsi", or a "meet" label)
+        # accepted attacker-chosen hosts such as meet.evil.tld. Self-hosted deployments must now
+        # be declared in VEXA_JITSI_HOSTS — on pasted links and in the ICS scan alike.
+        monkeypatch.delenv("VEXA_JITSI_HOSTS", raising=False)
+        assert parse_meeting_url("https://jitsi.example.org/MyRoom") is None
+        assert parse_meeting_url("https://meet.example.org/TeamSync") is None
+        assert parse_meeting_url("https://eu.meet.example.org/QualifiedRoomName") is None
+        assert parse_meeting_url("https://meet.evil.tld/Room") is None
+        assert parse_meeting_url("https://meetings.example.org/Room") is None
 
-    def test_self_hosted_meet_convention_inferred_on_paste(self):
-        assert parse_meeting_url("https://meet.example.org/TeamSync") == ("jitsi", "TeamSync@meet.example.org")
-        # Regionalized deployments put "meet" mid-hostname.
+    def test_declared_self_hosted_jitsi_inferred(self, monkeypatch):
+        # The caller keeps the raw URL as meeting_url so the bot joins on that host; the native id
+        # embeds the host (room@host) — a jitsi room is deployment-scoped, so same-named rooms on
+        # different deployments never share an identity key.
+        monkeypatch.setenv("VEXA_JITSI_HOSTS", "jitsi.example.org,eu.meet.example.org")
+        assert parse_meeting_url("https://jitsi.example.org/MyRoom") == ("jitsi", "MyRoom@jitsi.example.org")
         assert parse_meeting_url("https://eu.meet.example.org/QualifiedRoomName") == (
             "jitsi",
             "QualifiedRoomName@eu.meet.example.org",
         )
-        # "meet" must be a whole label — meetings.example.org is NOT a jitsi convention.
-        assert parse_meeting_url("https://meetings.example.org/Room") is None
-        # …and NOT in the free-text (ICS) scan, where the meet-label rule is too loose.
-        assert parse_meeting_url("https://eu.meet.example.org/TeamSync", generic_hosts=False) is None
-        # meet.google.com is claimed by the Meet rule first — never captured by the fallback.
+        # declaration is exact-host: a sibling is not covered
+        assert parse_meeting_url("https://us.meet.example.org/Room") is None
+        # meet.google.com is claimed by the Meet rule first — never captured as jitsi.
         assert parse_meeting_url("https://meet.google.com/abc-defg-hij") == ("google_meet", "abc-defg-hij")
 
 

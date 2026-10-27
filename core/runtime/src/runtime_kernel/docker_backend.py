@@ -19,6 +19,7 @@ from urllib.parse import quote
 import requests_unixsocket
 
 from .backend import WorkloadHandle
+from .hardening import hardening_host_config, hardening_user
 from .models import Resources
 from .mounts import workspace_binds
 from .profiles import Runnable
@@ -182,12 +183,12 @@ class DockerBackend:
         env: dict[str, str],
         resources: Optional[Resources] = None,
     ) -> WorkloadHandle:
-        """``resources`` is accepted and NOT enforced here — the enforcement boundary is k8s-only,
-        and this backend claims no parity with it. Compose/Lite have no admission controller
-        demanding a declared request+limit, and translating the intent into ``HostConfig.Memory``
-        would introduce an OOM-kill ceiling on live meeting bots that run unbounded today: a
-        behaviour change on the most-used substrate, bought for no admission benefit. A deployment
-        that wants Docker enforcement adds it as its own change, with its own live evidence."""
+        """Every container is hardened per workload class (security finding #4,
+        ``runtime_kernel.hardening``): CapDrop ALL, no-new-privileges and memory/pids/CPU ceilings
+        from the ``RUNTIME_DOCKER_*`` keys, with tested defaults sized for live meeting bots (4g /
+        1024 pids / 2 CPUs) and an off switch. When ``resources`` carries an explicit ``memoryMb`` /
+        ``cpu`` (spec or profile — the k8s sizing keys), it replaces the docker default for that
+        dimension; GPU is not enforced here."""
         if not runnable.image:
             raise ValueError("docker backend requires an image")
         name = self._cname(workload_id)
@@ -259,6 +260,14 @@ class DockerBackend:
             if value and key not in spawn_env:
                 spawn_env[key] = value
 
+        # Finding #4 — CapDrop ALL, no-new-privileges, memory/pids/CPU ceilings (+ opt-in read-only
+        # rootfs / non-root user) per workload class; see runtime_kernel.hardening.
+        workload_class = runnable.workload_class
+        host_config.update(hardening_host_config(
+            workload_class,
+            memory_bytes=(resources.memoryMb * 1024 * 1024) if resources and resources.memoryMb else None,
+            nano_cpus=int(resources.cpu * 1e9) if resources and resources.cpu else None,
+        ))
         payload: dict[str, Any] = {
             "Image": runnable.image,
             "Env": [f"{k}={v}" for k, v in spawn_env.items()],
@@ -267,6 +276,8 @@ class DockerBackend:
         }
         if runnable.command:
             payload["Cmd"] = list(runnable.command)
+        if user := hardening_user(workload_class):
+            payload["User"] = user
 
         r = self._req("POST", f"/containers/create?name={name}", json=payload)
         if r.status_code == 409:  # stale container with this name — replace it

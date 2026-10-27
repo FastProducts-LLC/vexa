@@ -12,7 +12,6 @@ HTTP status the gateway forwards verbatim:
 """
 from __future__ import annotations
 
-import ipaddress
 import os
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
@@ -21,6 +20,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from ..collector.meeting_link import parse_meeting_url
+from ..meeting_url_policy import MeetingUrlRejected, check_meeting_url, validate_native_meeting_id
 from ..service_authority import (
     ServiceAuthorityDenied,
     ServiceAuthorityUnavailable,
@@ -149,51 +149,18 @@ def _resolve_automatic_leave(value: Optional[object]) -> dict:
     return resolved
 
 
-def _validate_meeting_url(url: object) -> str:
-    """SSRF hygiene for the caller-supplied ``meeting_url`` passthrough (zoom AND jitsi — the
-    bot's browser navigates wherever this points, so an authenticated caller must not be able to
-    aim it at internal infrastructure). Entry-point validation, 422 on violation:
-
-      * must parse cleanly and use ``https`` (the bot joins real deployments over TLS only),
-      * host must be non-empty and not ``localhost``/``*.localhost``,
-      * host must not be an IP literal (deployments are hostname-addressed; IP literals are the
-        cheap way to reach loopback/link-local/private ranges — 10.x, 169.254.x, 127.x, …).
-
-    Static checks only — no DNS resolution on the spawn path (a hostname that RESOLVES to a
-    private IP is contained by network policy around the bot runtime, and slow-fails there)."""
-    if not isinstance(url, str) or not url.strip():
-        raise HTTPException(status_code=422, detail="meeting_url must be a non-empty string")
-    raw = url.strip()
+def _validate_meeting_url(url: object, platform: Optional[str] = None) -> str:
+    """The caller-supplied ``meeting_url`` must pass the shared meeting-URL allowlist
+    (``meeting_url_policy``, security finding #1): the bot's browser navigates wherever this points,
+    so it must be an https link on the platform's own host — exact host or dot-boundary subdomain,
+    no userinfo, port, IP literal, IDN look-alike, backslash or encoded trick. ``platform`` (when the
+    caller named one) must match the host. Static checks only, no DNS on the spawn path. 422 on
+    violation; returns the normalised URL."""
     try:
-        parsed = urlparse(raw)
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"meeting_url does not parse as a URL: {raw!r}")
-    if parsed.scheme != "https":
-        raise HTTPException(
-            status_code=422,
-            detail="meeting_url must use https:// — the bot only joins TLS deployments",
-        )
-    try:
-        host = parsed.hostname
-    except ValueError:
-        host = None
-    if not host:
-        raise HTTPException(status_code=422, detail="meeting_url must have a valid hostname")
-    if host.lower() == "localhost" or host.lower().endswith(".localhost"):
-        raise HTTPException(
-            status_code=422,
-            detail="meeting_url cannot target localhost",
-        )
-    try:
-        ipaddress.ip_address(host)
-    except ValueError:
-        pass  # hostname, not an IP literal — OK
-    else:
-        raise HTTPException(
-            status_code=422,
-            detail="meeting_url cannot be an IP literal — use the deployment's hostname",
-        )
-    return raw
+        normalised, _ = check_meeting_url(url, platform=platform or None)
+    except MeetingUrlRejected as e:
+        raise HTTPException(status_code=422, detail=f"meeting_url rejected: {e}")
+    return normalised
 
 
 def _resolve_user_id(x_user_id: Optional[str]) -> int:
@@ -303,10 +270,13 @@ def build_router(
         platform = str(body.get("platform", "")).strip()
         native_meeting_id = str(body.get("native_meeting_id", "")).strip()
         meeting_url = body.get("meeting_url")
-        # A caller-supplied meeting_url is an any-URL passthrough to the bot's browser
-        # (zoom/jitsi) — validate at the point of entry (SSRF hygiene, 422 on violation).
-        if meeting_url is not None:
-            meeting_url = _validate_meeting_url(meeting_url)
+        # A caller-supplied meeting_url goes to the bot's browser — it must pass the meeting-URL
+        # allowlist at the point of entry (finding #1, 422 on violation).
+        # A platform the meeting-bot flow cannot spawn is refused below (typed 422, before any
+        # write) with a message naming the platform, so only spawnable/absent platforms are checked
+        # against a host here.
+        if meeting_url is not None and (not platform or platform in SPAWNABLE_PLATFORMS):
+            meeting_url = _validate_meeting_url(meeting_url, platform)
         passcode = body.get("passcode")
         # api.v1's `teams_base_host` — WHICH Teams web client a constructed URL is built on. The
         # MCP link parser fills it from the link it parsed (gov./dod. clouds, teams.live.com for
@@ -433,6 +403,13 @@ def build_router(
                     "use google_meet/teams, or provide meeting_url (required for zoom/jitsi)"
                 ),
             )
+        # Finding #1 — a URL the API BUILDS from native_meeting_id must stay on the platform's host:
+        # the id must be a single URL-safe token (the request_bot backstop re-checks the final URL).
+        if not meeting_url:
+            try:
+                validate_native_meeting_id(platform, native_meeting_id)
+            except MeetingUrlRejected as e:
+                raise HTTPException(status_code=422, detail=str(e))
 
         transcribe_enabled = _resolve_transcribe_enabled(body.get("transcribe_enabled"))
 
@@ -495,6 +472,8 @@ def build_router(
             # request asked to CONTINUE a stopped meeting. 409 (conflicting state), not 5xx: nothing
             # is broken, and the detail names the request that works.
             raise HTTPException(status_code=409, detail=str(e))
+        except MeetingUrlRejected as e:
+            raise HTTPException(status_code=422, detail=str(e))
         except DuplicateMeeting as e:
             raise HTTPException(status_code=409, detail=str(e))
         except (MaxBotsExceeded, QuotaExceeded) as e:

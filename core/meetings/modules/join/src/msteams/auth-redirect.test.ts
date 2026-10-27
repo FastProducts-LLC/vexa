@@ -29,6 +29,7 @@ import {
   redactUrl,
 } from './auth-redirect';
 import { joinMicrosoftTeams } from './join';
+import { MeetingUrlNotAllowedError } from '../shared/meeting-url-allowlist';
 
 // ── virtual clock: the join flow measures elapsed with Date.now() and sleeps with
 //    page.waitForTimeout(), so driving both from one counter runs 45s of waiting instantly.
@@ -223,13 +224,17 @@ const PANTOMIME = ['Step 3:', 'Step 4:', 'Step 5:', 'Step 6:', 'Step 6b:'];
     );
   }
 
-  // ── 7. An embedder-supplied host we were POINTED at stays advisory ─────────
-  //     (a vanity/white-label Teams entry point is not a redirect — we are where we asked to be)
+  // ── 7. A vanity/white-label host is refused BEFORE navigation ───────────────
+  //     (security finding #1: the bot only navigates allowlisted Teams hosts — meeting-api
+  //     refuses such a URL with a 422, and the join layer refuses it again as defence in depth)
   {
     const vanity = 'https://meet.contoso.example/join/REDACTED';
     const page = mockPage(vanity);
     const { error } = await driveJoin(page, vanity);
-    check('still on the requested host → no throw', error === null, true);
+    check(
+      'non-allowlisted vanity host → MeetingUrlNotAllowedError',
+      error instanceof MeetingUrlNotAllowedError, true,
+    );
   }
 
   (Date as any).now = realDateNow;

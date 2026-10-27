@@ -14,6 +14,7 @@ import {
 import { HumanizedInteractor, MOCAP_LIBRARY } from "./humanized";
 import { AdmissionError } from "../shared/admission";
 import { resolveBotUiLocale } from "../browser-args";
+import { assertAllowedMeetingUrl } from "../shared/meeting-url-allowlist";
 
 /** Thrown when authenticated mode detects a signed-out browser profile. Extends AdmissionError so
  *  the JoinDriver's single `instanceof` catch maps the typed `auth_session_missing` outcome to a
@@ -316,6 +317,7 @@ export async function joinGoogleMeeting(
   botName: string,
   botConfig: BotConfig
 ): Promise<void> {
+  assertAllowedMeetingUrl(meetingUrl, "google_meet"); // finding #1 — defence in depth
   const navUrl = withPinnedMeetLocale(meetingUrl, resolveBotUiLocale());
   await page.goto(navUrl, { waitUntil: "domcontentloaded" });
   await page.bringToFront();
