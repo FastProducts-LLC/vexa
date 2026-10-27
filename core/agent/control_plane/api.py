@@ -536,9 +536,13 @@ def _sse(events) -> Iterator[str]:
 
 def _has_custom_model_endpoint(cfg: dict) -> bool:
     """True iff a per-user Settings → Models config actually delivers a credential to the worker.
-    Mirrors overlay_model_config's inertness rule (dispatch.py): only ``mode=custom`` WITH a
-    ``base_url`` stamps auth env; ``api_key`` is optional (a keyless local gateway is legitimate)."""
-    return (cfg.get("mode") or "").strip() == "custom" and bool((cfg.get("base_url") or "").strip())
+    Mirrors overlay_model_config's pairing rule (dispatch.py, C1): only ``mode=custom`` WITH a
+    ``base_url`` AND an ``api_key`` stamps auth env. A keyless custom endpoint delivers NOTHING —
+    the deployment's credentials never follow a subject-supplied base_url — so it is refused here
+    with the actionable message instead of spawning a worker that can only fail."""
+    return ((cfg.get("mode") or "").strip() == "custom"
+            and bool((cfg.get("base_url") or "").strip())
+            and bool((cfg.get("api_key") or "").strip()))
 
 
 def _model_creds_error_message() -> str:

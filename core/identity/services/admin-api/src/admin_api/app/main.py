@@ -272,6 +272,90 @@ def _mask_secret(secret: Optional[str]) -> Optional[str]:
     return "********" + (secret[-4:] if len(secret) > 8 else "")
 
 
+# ── C1: policy for a SUBJECT-supplied model endpoint ──────────────────────────────────────────
+# Mirror of core/agent/control_plane/model_endpoint.py (the packages cannot import each other —
+# keep the two in sync). agent-api enforces the same rule at dispatch; this copy turns a bad
+# base_url into a 422 at WRITE time so the user is told instead of silently getting defaults.
+_MODEL_ENDPOINT_ALLOWLIST_ENV = "VEXA_MODEL_BASE_URL_ALLOWLIST"
+_MODEL_ENDPOINT_ALLOW_PRIVATE_ENV = "VEXA_MODEL_ALLOW_PRIVATE_ENDPOINTS"
+_PRIVATE_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa")
+
+
+def _endpoint_allowlist() -> tuple:
+    raw = os.environ.get(_MODEL_ENDPOINT_ALLOWLIST_ENV, "")
+    return tuple(h.strip().lower() for h in raw.split(",") if h.strip())
+
+
+def _endpoint_allow_private() -> bool:
+    return os.environ.get(_MODEL_ENDPOINT_ALLOW_PRIVATE_ENV, "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _is_private_host(host: str) -> bool:
+    import ipaddress
+    h = (host or "").strip().lower().rstrip(".")
+    if not h:
+        return True
+    if h.startswith("[") and h.endswith("]"):
+        h = h[1:-1]
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        return bool(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                    or ip.is_multicast or ip.is_unspecified)
+    if h == "localhost" or h.endswith(_PRIVATE_HOST_SUFFIXES):
+        return True
+    return "." not in h
+
+
+def _endpoint_host_problem(base_url: str) -> Optional[str]:
+    """``None`` when ``base_url`` may be stored as a model endpoint, else the 422 detail."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit((base_url or "").strip())
+    except ValueError as exc:
+        return f"base_url is not a valid URL ({exc})"
+    if parts.scheme not in ("http", "https"):
+        return "base_url must be an http(s) URL"
+    if parts.username is not None or parts.password is not None:
+        return "base_url must not carry userinfo (user:pass@host)"
+    host = (parts.hostname or "").strip()
+    if not host:
+        return "base_url must name a host"
+    if not _endpoint_allow_private() and _is_private_host(host):
+        return (f"base_url host {host!r} is a private/internal address; model endpoints must be "
+                f"public hosts (operator opt-out: {_MODEL_ENDPOINT_ALLOW_PRIVATE_ENV}=1)")
+    allowlist = _endpoint_allowlist()
+    if allowlist:
+        h = host.lower().rstrip(".")
+        ok = any((h == e[1:] or h.endswith(e)) if e.startswith(".") else h == e for e in allowlist)
+        if not ok:
+            return (f"base_url host {host!r} is not on {_MODEL_ENDPOINT_ALLOWLIST_ENV} "
+                    f"({', '.join(allowlist)})")
+    return None
+
+
+def _check_model_pairing(merged: dict) -> None:
+    """C1: at the USER tier a custom endpoint and its credential are stored as a PAIR. A base_url
+    without an api_key would reach the worker credential-less (the deployment's key never follows
+    a user-supplied endpoint), and mode=custom without an endpoint is a dead setting — refuse both
+    with the reason instead of storing a config that cannot work. (The platform tier is the
+    operator's: a platform base_url may pair with the deployment's own credentials.)"""
+    mode = (merged.get("mode") or "").strip()
+    base_url = (merged.get("base_url") or "").strip()
+    api_key = (merged.get("api_key") or "").strip()
+    if base_url and not api_key:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="A custom base_url needs its own api_key: the deployment's "
+                                   "credentials are never sent to a user-supplied endpoint. Set "
+                                   "both, or clear base_url.")
+    if mode == "custom" and not (base_url and api_key):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="mode=custom needs both base_url and api_key.")
+
+
 def _validate_config_fields(update: dict, *, kind: str) -> dict:
     """Shared field validation for both the per-user prefs and the platform settings writers
     (one rulebook, whichever tier writes). Returns the cleaned update dict."""
@@ -294,6 +378,12 @@ def _validate_config_fields(update: dict, *, kind: str) -> dict:
             if parsed.scheme not in ("http", "https") or not parsed.hostname:
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                                     detail=f"{field} must be an http(s) URL")
+        if field == "base_url" and kind == "model_prefs":
+            # C1: the USER tier only — an operator's platform endpoint may legitimately be a
+            # private gateway on the compose network; a tenant's may not.
+            problem = _endpoint_host_problem(value)
+            if problem:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=problem)
         cleaned[field] = value
     return cleaned
 
@@ -316,6 +406,25 @@ def _resolve_effective(user_cfg: dict, platform_cfg: dict, fields: tuple) -> dic
         value = user_cfg.get(field) or platform_cfg.get(field)
         if value:
             out[field] = value
+    return out
+
+
+def _resolve_effective_models(user_cfg: dict, platform_cfg: dict) -> dict:
+    """The models config resolves field-by-field EXCEPT the endpoint pair (C1): when the USER names
+    a ``base_url``, the ``api_key`` comes from the user tier only — never the platform's key, which
+    would otherwise be paired with (and sent to) a host the user chose. A user who sets only an
+    api_key still pairs it with the platform's endpoint (their key, the operator's gateway: fine)."""
+    out = _resolve_effective(user_cfg, platform_cfg, _MODELS_FIELDS)
+    if (user_cfg.get("base_url") or "").strip():
+        user_key = (user_cfg.get("api_key") or "").strip()
+        if user_key:
+            out["api_key"] = user_key
+        else:
+            out.pop("api_key", None)
+        out["endpoint_source"] = "user"
+    elif out.get("base_url"):
+        # Operator-chosen: dispatch may pair it with the deployment's own credentials.
+        out["endpoint_source"] = "platform"
     return out
 
 
@@ -674,6 +783,8 @@ def create_app() -> FastAPI:
         cleaned = _validate_config_fields(update_fields, kind=data_key)
         data = dict(user.data or {})
         data[data_key] = _apply_config_update(data.get(data_key) or {}, cleaned)
+        if data_key == "model_prefs":
+            _check_model_pairing(data[data_key])
         if not data[data_key]:
             data.pop(data_key, None)  # fully cleared → back to platform/env defaults
         user.data = data
@@ -1016,10 +1127,9 @@ def create_app() -> FastAPI:
         _check_internal(request)
         user = await _load_user(user_id, db)
         data = user.data if isinstance(user.data, dict) else {}
-        return {"models": _resolve_effective(
+        return {"models": _resolve_effective_models(
             data.get("model_prefs") or {},
             await _platform_setting("models", db),
-            _MODELS_FIELDS,
         )}
 
     @app.get("/")

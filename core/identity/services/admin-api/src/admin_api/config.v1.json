@@ -115,6 +115,20 @@
    "default": "8001",
    "description": "uvicorn bind port",
    "targets": ["lite"]
+  },
+  {
+   "key": "VEXA_MODEL_BASE_URL_ALLOWLIST",
+   "class": "defaulted",
+   "default": "(empty \u2014 any PUBLIC host)",
+   "description": "C1: hostnames a Settings \u2192 Models custom base_url may name (comma-separated; '.example.com' = domain + subdomains). Checked at WRITE time here (422) and again at dispatch by agent-api \u2014 set the same value on both services.",
+   "targets": ["compose"]
+  },
+  {
+   "key": "VEXA_MODEL_ALLOW_PRIVATE_ENDPOINTS",
+   "class": "defaulted",
+   "default": "false",
+   "description": "C1: 1 lets a custom base_url name a private/loopback/link-local/dotless host (a dev LiteLLM on the compose network). Default off: a tenant must not store an endpoint that aims a worker at admin-api/redis/metadata IPs.",
+   "targets": ["compose"]
   }
  ]
 }

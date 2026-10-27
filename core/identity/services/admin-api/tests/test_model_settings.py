@@ -149,3 +149,108 @@ def test_bot_context_carries_effective_transcription(client):
     cfg = client.get("/user/transcription", headers={"X-API-Key": tok}).json()
     assert cfg["url"] == "https://stt-mine.example.com"
     assert cfg["token_set"] is False
+
+
+# ── C1 (2026-10-25): a user-supplied endpoint and its credential are a PAIR ───────────────────
+# Before the fix a user could store {"mode":"custom","base_url":"https://attacker.example"} with
+# no api_key; the resolver then paired that base_url with the platform's api_key (and dispatch
+# with the deployment's env key) and the worker posted it to the attacker.
+
+def test_user_base_url_requires_users_own_api_key(client):
+    _uid, tok = _user_token(client, email="pair@vexa.ai")
+    h = {"X-API-Key": tok}
+    r = client.put("/user/models", headers=h, json={"mode": "custom", "base_url": "https://attacker.example"})
+    assert r.status_code == 422, r.text
+    assert "api_key" in r.json()["detail"]
+    # mode=custom without an endpoint is a dead setting too
+    assert client.put("/user/models", headers=h, json={"mode": "custom"}).status_code == 422
+    # the pair is accepted together …
+    r = client.put("/user/models", headers=h, json={"mode": "custom", "base_url": "https://gw.example.com",
+                                                    "api_key": "sk-user"})
+    assert r.status_code == 200, r.text
+    # … and the key cannot be cleared while the endpoint stays
+    assert client.put("/user/models", headers=h, json={"api_key": ""}).status_code == 422
+    # clearing both is fine
+    assert client.put("/user/models", headers=h, json={"api_key": "", "base_url": "", "mode": ""}).status_code == 200
+    # a key alone (BYO key to the operator's gateway) is fine
+    assert client.put("/user/models", headers=h, json={"api_key": "sk-only"}).status_code == 200
+
+
+def test_user_base_url_rejects_private_and_internal_hosts(client, monkeypatch):
+    monkeypatch.delenv("VEXA_MODEL_ALLOW_PRIVATE_ENDPOINTS", raising=False)
+    _uid, tok = _user_token(client, email="ssrf@vexa.ai")
+    h = {"X-API-Key": tok}
+    for url in ("http://admin-api:8001", "http://127.0.0.1:8090", "http://10.1.2.3", "http://localhost:4000",
+                "http://169.254.169.254/latest", "https://user:pw@gw.example.com", "http://[::1]:1"):
+        r = client.put("/user/models", headers=h, json={"mode": "custom", "base_url": url, "api_key": "k"})
+        assert r.status_code == 422, (url, r.text)
+    monkeypatch.setenv("VEXA_MODEL_ALLOW_PRIVATE_ENDPOINTS", "1")
+    r = client.put("/user/models", headers=h, json={"mode": "custom", "base_url": "http://litellm:4000", "api_key": "k"})
+    assert r.status_code == 200, r.text
+
+
+def test_user_base_url_honours_host_allowlist(client, monkeypatch):
+    monkeypatch.setenv("VEXA_MODEL_BASE_URL_ALLOWLIST", "gw.example.com, .openrouter.ai")
+    _uid, tok = _user_token(client, email="allow@vexa.ai")
+    h = {"X-API-Key": tok}
+    assert client.put("/user/models", headers=h, json={"mode": "custom", "base_url": "https://attacker.example",
+                                                       "api_key": "k"}).status_code == 422
+    assert client.put("/user/models", headers=h, json={"mode": "custom", "base_url": "https://api.openrouter.ai/v1",
+                                                       "api_key": "k"}).status_code == 200
+    assert client.put("/user/models", headers=h, json={"base_url": "https://gw.example.com"}).status_code == 200
+    assert client.put("/user/models", headers=h, json={"base_url": "https://evilopenrouter.ai"}).status_code == 422
+
+
+def test_platform_tier_may_set_an_operator_endpoint_without_a_key(client):
+    """The operator's gateway is the operator's business: a private host and no stored key are both
+    allowed at the platform tier (dispatch pairs it with the deployment's own credentials)."""
+    r = client.put("/internal/settings/models", headers=_internal(),
+                   json={"mode": "custom", "base_url": "http://litellm:4000"})
+    assert r.status_code == 200, r.text
+
+
+def test_model_config_never_pairs_user_base_url_with_platform_key(client, pg_url):
+    uid, tok = _user_token(client, email="nopair@vexa.ai")
+    client.put("/internal/settings/models", headers=_internal(),
+               json={"mode": "custom", "base_url": "https://global.example.com", "api_key": "sk-platform"})
+    # The write-time pairing check refuses a keyless user base_url outright …
+    r = client.put("/user/models", headers={"X-API-Key": tok}, json={"base_url": "https://attacker.example"})
+    assert r.status_code == 422
+    # … and even for a stored legacy row (pre-fix data) the resolver never lends the platform key.
+    import json as _json
+    from sqlalchemy import text as sa_text
+    from admin_api.schema.models import User
+
+    eng = create_engine(pg_url)
+    with eng.begin() as conn:
+        conn.execute(sa_text(f"UPDATE {User.__tablename__} SET data = CAST(:d AS jsonb) WHERE id = :id"),
+                     {"d": _json.dumps({"model_prefs": {"base_url": "https://attacker.example"}}), "id": uid})
+    eng.dispose()
+
+    models = client.get(f"/internal/users/{uid}/model-config", headers=_internal()).json()["models"]
+    assert models["base_url"] == "https://attacker.example"
+    assert "api_key" not in models                      # platform key NOT lent to the user's host
+    assert models["endpoint_source"] == "user"          # dispatch applies the strict rule
+    assert models["mode"] == "custom"                   # mode still falls through field-by-field
+
+
+def test_model_config_marks_platform_endpoint_and_user_key_pairing(client):
+    uid, tok = _user_token(client, email="src@vexa.ai")
+    client.put("/internal/settings/models", headers=_internal(),
+               json={"mode": "custom", "base_url": "https://global.example.com", "api_key": "sk-platform"})
+    models = client.get(f"/internal/users/{uid}/model-config", headers=_internal()).json()["models"]
+    assert models["endpoint_source"] == "platform" and models["api_key"] == "sk-platform"
+    # a user's own key to the operator's endpoint is fine (their key, the operator's gateway)
+    client.put("/user/models", headers={"X-API-Key": tok}, json={"api_key": "sk-user"})
+    models = client.get(f"/internal/users/{uid}/model-config", headers=_internal()).json()["models"]
+    assert models["endpoint_source"] == "platform" and models["api_key"] == "sk-user"
+    # a user's own endpoint + key: user source, user key only
+    client.put("/user/models", headers={"X-API-Key": tok}, json={"base_url": "https://mine.example.com"})
+    models = client.get(f"/internal/users/{uid}/model-config", headers=_internal()).json()["models"]
+    assert models["endpoint_source"] == "user" and models["api_key"] == "sk-user"
+    assert models["base_url"] == "https://mine.example.com"
+    # no endpoint anywhere → no source field
+    client.put("/internal/settings/models", headers=_internal(), json={"base_url": "", "api_key": "", "mode": ""})
+    client.put("/user/models", headers={"X-API-Key": tok}, json={"base_url": "", "api_key": ""})
+    models = client.get(f"/internal/users/{uid}/model-config", headers=_internal()).json()["models"]
+    assert "endpoint_source" not in models
