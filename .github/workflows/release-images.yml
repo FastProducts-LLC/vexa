@@ -76,7 +76,7 @@ jobs:
           fi
           echo "✓ Docker Hub credentials configured"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Candidate provenance compares against the witnessed build commit. A
           # depth-1 checkout makes that commit unknowable and must never widen
@@ -171,7 +171,7 @@ jobs:
 
       - name: Preserve the authenticated candidate-tag audit
         if: always() && steps.build_plan.outputs.build_mode == 'bot-lite-delta'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: candidate-tag-audit-${{ steps.version.outputs.version }}
           path: release-audit/candidate-tag-audit.tsv
@@ -212,17 +212,17 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.preflight.outputs.build_matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Free runner disk (large image)
         if: matrix.free_disk == true
         uses: jlumbroso/free-disk-space@v1.3.1
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -249,10 +249,10 @@ jobs:
     env:
       VERSION: ${{ needs.preflight.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Free runner disk (the bot build needs ~10 GB of layers)
         uses: jlumbroso/free-disk-space@v1.3.1
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -300,9 +300,9 @@ jobs:
       VERSION: ${{ needs.preflight.outputs.version }}
       MAP: ${{ needs.preflight.outputs.candidate_map }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -384,7 +384,7 @@ jobs:
             printf '%s\t%s\t%s\n' "$stable" "$readback" "$candidate" |
               tee -a stable-image-aliases.tsv
           done < <(node release/candidate-image-map.mjs emit-tsv "$MAP")
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: stable-image-aliases-${{ needs.preflight.outputs.version }}
           path: stable-image-aliases.tsv
@@ -405,9 +405,9 @@ jobs:
       VERSION: ${{ needs.preflight.outputs.version }}
       SBOM_FILE: vexa-sbom-${{ needs.preflight.outputs.version }}.spdx.json
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4 # version comes from package.json "packageManager"
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6 # version comes from package.json "packageManager"
+      - uses: actions/setup-node@v7
         with: { node-version: 22, cache: pnpm } # pnpm 11.7 requires Node >= 22.13
       # Tolerate minor lockfile drift, exactly as the image builds do (Dockerfiles install with
       # --frozen-lockfile=false) — the SBOM must reflect the same tree the images were built from.
@@ -426,7 +426,7 @@ jobs:
             if (d.packages.length < 3) throw new Error("SBOM has too few packages: " + d.packages.length);
             console.log("✓ SBOM ok:", d.packages.length, "packages");
           '
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vexa-sbom-${{ needs.preflight.outputs.version }}
           path: ${{ env.SBOM_FILE }}
@@ -453,9 +453,9 @@ jobs:
       VERSION: ${{ needs.preflight.outputs.version }}
       BASE_VERSION: ${{ needs.preflight.outputs.base_candidate_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: jlumbroso/free-disk-space@v1.3.1
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.3.2
       - name: Published Bot has the promised identity
         run: |
           set -euo pipefail
@@ -504,7 +504,7 @@ jobs:
     env:
       VERSION: ${{ needs.preflight.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: jlumbroso/free-disk-space@v1.3.1
       - name: Published Lite has the promised identity and offline model
         run: |
@@ -556,7 +556,7 @@ jobs:
     env:
       VERSION: ${{ needs.preflight.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: jlumbroso/free-disk-space@v1.3.1
       - name: Published Lite is native arm64 content
         run: |
@@ -617,8 +617,8 @@ jobs:
       VERSION: ${{ needs.preflight.outputs.version }}
       BASE_VERSION: ${{ needs.preflight.outputs.base_candidate_tag }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
       - name: Read back immutable Bot and Lite identities
         run: |
           set -euo pipefail
@@ -717,7 +717,7 @@ jobs:
                 "vexaai/vexa-lite": $lite
               }
             }' | tee release-receipt/candidate-delta.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: candidate-delta-receipt-${{ needs.preflight.outputs.version }}
           path: release-receipt/candidate-delta.json

@@ -56,12 +56,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # pull_request event → default (the PR merge ref). dispatch → the named PR's merge ref.
           ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
       - uses: jlumbroso/free-disk-space@v1.3.1
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v10.3.2
       # agent-api reads deploy/compose/.env via env_file (single source of truth) — it must exist.
       - name: Seed compose .env
         run: cp deploy/compose/.env.example deploy/compose/.env
@@ -121,7 +121,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
           fetch-depth: 2   # merge commit + both parents → HEAD^1 (main) is diffable
@@ -139,14 +139,14 @@ jobs:
           fi
       - uses: jlumbroso/free-disk-space@v1.3.1
         if: steps.scope.outputs.hit == '1'
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
         if: steps.scope.outputs.hit == '1'
       # Build the PR's OWN lite image (A3: the PR tree, anonymous pulls, no cache-to — read-only
       # cache use). The tag is the Makefile's LOCAL_TAG: `make up` prefers a local vexa-lite:dev
       # over the Hub image, so the stack below boots exactly what this PR would ship.
       - name: Build deploy/lite/Dockerfile.lite from the PR tree
         if: steps.scope.outputs.hit == '1'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/lite/Dockerfile.lite
