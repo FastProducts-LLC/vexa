@@ -8,6 +8,7 @@ import {
   zoomPreviewVideoSelector,
   zoomPermissionDismissSelector,
 } from "./selectors";
+import { assertAllowedMeetingUrl } from "../shared/meeting-url-allowlist";
 
 // NOTE vs the monolith: the audio-join flow (prepareZoomWebMeeting) and the
 // per-speaker capture pipeline are RECORDING/HOST concerns and stay outside
@@ -104,6 +105,7 @@ export async function joinZoomMeeting(
   // allowed / use Zoom RTMS" wall that blocks anonymous web joins?
   const authenticated = !!botConfig.authenticated;
 
+  assertAllowedMeetingUrl(meetingUrl, "zoom"); // finding #1 — defence in depth
   const rawUrl = meetingUrl;
   const webClientUrl = buildZoomWebClientUrl(rawUrl);
   log(`[Zoom Web] Navigating to web client: ${webClientUrl}`);

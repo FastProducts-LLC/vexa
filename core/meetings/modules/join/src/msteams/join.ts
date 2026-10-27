@@ -14,6 +14,7 @@ import {
   teamsSpeakerDisableSelectors
 } from "./selectors";
 import { dismissTeamsAvConfirmModal, isTeamsAvConfirmModalVisible } from "./modals";
+import { assertAllowedMeetingUrl } from "../shared/meeting-url-allowlist";
 
 // NOTE vs the monolith: the WebRTC remote-audio hook and the voice-agent
 // virtual-camera flow are RECORDING/HOST concerns and stay outside this brick.
@@ -138,6 +139,7 @@ export async function joinMicrosoftTeams(
 ): Promise<void> {
   // Step 1: Navigate to Teams meeting
   log(`Step 1: Navigating to Teams meeting: ${meetingUrl}`);
+  assertAllowedMeetingUrl(meetingUrl, "teams"); // finding #1 — defence in depth
   await page.goto(meetingUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForTimeout(500);
 

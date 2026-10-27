@@ -6,6 +6,7 @@
  * observes state through hooks; recording, transcription, Redis, and the
  * meeting-api callbacks all live OUTSIDE this boundary.
  */
+import { assertAllowedMeetingUrl } from "./shared/meeting-url-allowlist";
 import type { Page } from "playwright";
 import { joinGoogleMeeting } from "./googlemeet/join";
 import { waitForGoogleMeetingAdmission, checkForGoogleAdmissionSilent } from "./googlemeet/admission";
@@ -52,17 +53,10 @@ export interface JoinOptions {
   hooks?: Partial<Hooks>;
 }
 
-/** Infer the platform from the meeting URL. Throws on an unrecognized host. */
+/** Infer the platform from the meeting URL's host (allowlisted hosts only, matched on a dot
+ *  boundary — never a substring). Throws on an unrecognized or refused URL. */
 export function resolvePlatform(meetingUrl: string): Platform {
-  if (meetingUrl.includes("meet.google.com")) return "google_meet";
-  if (meetingUrl.includes("teams.microsoft.com") || meetingUrl.includes("teams.live.com")) return "teams";
-  // Canonical zoom.us / *.zoom.us only — white-label portals (LFX etc.) can't be
-  // inferred from the URL; the embedder passes platform: "zoom" explicitly.
-  try {
-    const host = new URL(meetingUrl).hostname;
-    if (host === "zoom.us" || host.endsWith(".zoom.us")) return "zoom";
-  } catch { /* fall through to throw below */ }
-  throw new Error(`Cannot infer platform from meeting URL: ${meetingUrl}`);
+  return assertAllowedMeetingUrl(meetingUrl);
 }
 
 /**
@@ -73,6 +67,8 @@ export async function joinMeeting(page: Page, opts: JoinOptions): Promise<JoinRe
   if (opts.hooks) setHooks(opts.hooks);
 
   const platform = opts.platform ?? resolvePlatform(opts.meetingUrl);
+  // Defence in depth (finding #1): never point the browser at a non-meeting host.
+  assertAllowedMeetingUrl(opts.meetingUrl, platform);
   const botConfig: BotConfig = {
     platform,
     botName: opts.botName ?? "Vexa Join Layer",
@@ -113,6 +109,7 @@ export { joinGoogleMeeting, waitForGoogleMeetingAdmission, checkForGoogleAdmissi
 // admission wait; the JoinDriver adapter catches it and maps the outcome → a JoinOutcome so a host DENIAL
 // is recorded as a permanent `rejected`, not collapsed into a transient (retried) `join_failure` (G1).
 export { AdmissionError } from "./googlemeet/admission";
+export { assertAllowedMeetingUrl, MeetingUrlNotAllowedError } from "./shared/meeting-url-allowlist";
 export type { AdmissionOutcome } from "./googlemeet/admission";
 export { joinMicrosoftTeams, waitForTeamsMeetingAdmission, checkForTeamsAdmissionSilent, prepareForTeamsRecording, leaveMicrosoftTeams, startTeamsRemovalMonitor };
 export { joinZoomMeeting, buildZoomWebClientUrl, waitForZoomMeetingAdmission, checkForZoomAdmissionSilent, leaveZoomMeeting, dismissZoomPopups, startZoomRemovalMonitor };

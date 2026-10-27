@@ -3,7 +3,8 @@ terminal's ``clients/terminal/src/surfaces/meetingId.ts`` (same id formats, same
 
 Used by ``POST /meetings`` / ``PATCH /meetings/{id}`` (a planned meeting created from a pasted
 link) and by ``calendar_sync`` (extracting the joinable link out of an ICS event's LOCATION /
-DESCRIPTION). Pure string logic — no I/O, no framework imports.
+DESCRIPTION). Pure string logic — no I/O, no framework imports. Every URL must pass
+``meeting_url_policy.check_meeting_url`` (the shared allowlist) before an id is extracted.
 
 Id formats (mirrors the dashboard join-form):
   * google_meet → ``abc-defg-hij``
@@ -14,7 +15,9 @@ from __future__ import annotations
 
 import re
 from typing import Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlsplit
+
+from ..meeting_url_policy import MeetingUrlRejected, check_meeting_url
 
 _GMEET_ID = re.compile(r"^[a-z]{3}-[a-z]{4}-[a-z]{3}$")
 _ZOOM_ID = re.compile(r"\d{9,11}")
@@ -34,18 +37,24 @@ def parse_meeting_url(raw: str) -> Optional[tuple[str, str]]:
     if _GMEET_ID.match(value.lower()):
         return ("google_meet", value.lower())
 
-    parsed = urlparse(value)
-    host = (parsed.hostname or "").lower()
-    if host:
-        if "meet.google.com" in host:
+    if "://" in value or value.lower().startswith(("http:", "https:")):
+        # A URL: it must pass the meeting-URL allowlist (https, exact per-platform hosts on a dot
+        # boundary — finding #1) BEFORE any id is extracted. The old substring host checks accepted
+        # ``meet.google.com.evil.tld`` and any host containing "zoom".
+        try:
+            url, platform = check_meeting_url(value)
+        except MeetingUrlRejected:
+            return None
+        parsed = urlsplit(url)
+        if platform == "google_meet":
             code = next((p for p in reversed(parsed.path.split("/")) if p), "").lower()
             return ("google_meet", code) if _GMEET_ID.match(code) else None
-        if "zoom" in host:
+        if platform == "zoom":
             m = _ZOOM_ID.search(parsed.path) or _ZOOM_ID.search(parsed.query)
             return ("zoom", m.group(0)) if m else None
-        if "teams.microsoft.com" in host or "teams.live.com" in host:
+        if platform == "teams":
             # Classic deep link carries the thread id (…/l/meetup-join/19:meeting_…@thread.v2).
-            thread = _TEAMS_THREAD.search(unquote(value))
+            thread = _TEAMS_THREAD.search(unquote(url))
             if thread:
                 return ("teams", thread.group(0))
             # New short meeting link: teams.microsoft.com/meet/<id>?p=<passcode>.

@@ -19,6 +19,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from ..config_preflight import CONFIGURED, capability_state, missing_capability_keys
+from ..meeting_url_policy import MeetingUrlRejected, check_meeting_url, validate_native_meeting_id
 from .ports import MaxBotsExceeded, MeetingRepo, QuotaExceeded, RuntimeClient, SpawnFailed
 from .service import DuplicateMeeting, construct_meeting_url, request_bot
 
@@ -162,6 +163,17 @@ def build_router(repo: MeetingRepo, runtime: RuntimeClient) -> APIRouter:
                     "use google_meet/teams, or provide meeting_url (required for zoom)"
                 ),
             )
+        # Finding #1 — the bot's browser navigates this URL, so it must be an https link on the
+        # platform's own allowlisted host (meeting_url_policy). A caller-supplied URL is checked
+        # against the named platform; a URL the API builds from native_meeting_id is checked via
+        # the id's shape (the request_bot backstop re-checks the final URL).
+        try:
+            if meeting_url:
+                meeting_url, _ = check_meeting_url(meeting_url, platform=platform)
+            else:
+                validate_native_meeting_id(platform, native_meeting_id)
+        except MeetingUrlRejected as e:
+            raise HTTPException(status_code=422, detail=str(e))
 
         # CC4 — fail loud (P18): a transcription bot needs STT. The guard is the CANONICAL config.v1
         # capability gate (ADR-0026): it consults the declared `stt` capability's tri-state — the same
@@ -209,6 +221,8 @@ def build_router(repo: MeetingRepo, runtime: RuntimeClient) -> APIRouter:
                 webhook_secret=x_user_webhook_secret,
                 webhook_events=webhook_events,
             )
+        except MeetingUrlRejected as e:
+            raise HTTPException(status_code=422, detail=str(e))
         except DuplicateMeeting as e:
             raise HTTPException(status_code=409, detail=str(e))
         except (MaxBotsExceeded, QuotaExceeded) as e:
