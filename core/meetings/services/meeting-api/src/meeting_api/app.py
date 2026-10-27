@@ -373,7 +373,7 @@ def _mount_lifecycle(
 
     from .lifecycle.machine import IllegalTransition, TransitionSource
     from .lifecycle.provenance import build_service_provenance
-    from .callback_auth import check_bot_callback, check_runtime_callback
+    from .callback_auth import check_bot_binding, check_runtime_callback, verify_bot_credential
     from .lifecycle.receiver import conforms
     from .lifecycle.webhook import build_status_change_envelope, build_typed_envelope
     from .obs import log_event
@@ -635,6 +635,16 @@ def _mount_lifecycle(
                         span="lifecycle.callback",
                         fields={"meeting_id": meeting_row.get("id"), "error": str(e)},
                     )
+        # C4: the run is over — delete the bot's per-meeting Redis ACL user (BOT_REDIS_ACL). Best-effort.
+        if (
+            not change.no_op
+            and rec.status is not None
+            and rec.status.value in ("completed", "failed")
+            and rec.connection_id
+        ):
+            from .bot_spawn.service import _revoke_bot_redis
+
+            await _revoke_bot_redis(rec.connection_id)
         # Build the TYPED event the transition maps to (meeting.started on active,
         # meeting.completed with the post-meeting envelope on completion, bot.failed on terminal
         # failure) — additive alongside meeting.status_change, never instead of it. Built AFTER the
@@ -884,14 +894,19 @@ def _mount_lifecycle(
 
     @app.post("/bots/internal/callback/lifecycle")
     async def lifecycle_callback(request: Request) -> JSONResponse:
-        # C4 trust edge: only the bot itself (its internal secret OR its MeetingToken) may drive
-        # the FSM; anything else on the network is refused BEFORE the body is parsed.
-        verdict = check_bot_callback(request.headers, token_secret=token_secret)
+        # C4 trust edge: only the bot itself — its MeetingToken, bound to its own session — may drive
+        # the FSM. The credential is checked BEFORE the body is parsed, the binding right after.
+        verdict, claims = verify_bot_credential(request.headers, token_secret=token_secret)
+        if verdict is None:
+            try:
+                body = await request.json()
+            except Exception:  # noqa: BLE001 — a non-JSON body cannot name a session
+                body = None
+            verdict = check_bot_binding(claims, body)
         if verdict is not None:
             log_event("lifecycle_callback_refused", audience="system", level="warning",
                       span="lifecycle.callback", fields={"status": verdict[0], "detail": verdict[1]})
             return JSONResponse(status_code=verdict[0], content={"detail": verdict[1]})
-        body = await request.json()
         status_code, content = await _apply_lifecycle_event(
             body, transition_source=TransitionSource.BOT_CALLBACK
         )

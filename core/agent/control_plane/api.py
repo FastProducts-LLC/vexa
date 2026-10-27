@@ -956,6 +956,10 @@ def create_app(
     _internal_secret = (
         settings.internal_api_secret.get_secret_value() if settings is not None else ""
     ) or os.environ.get("VEXA_INTERNAL_API_SECRET", "")
+    # C4 split: X-Gateway-Verified is checked against the gateway identity secret; X-Internal-Secret
+    # (the internal tier: terminal, runtime-fired routines) against the internal secret. Unset identity
+    # secret → the legacy single secret (un-migrated deploys keep working).
+    _gateway_identity = os.environ.get("VEXA_GATEWAY_IDENTITY_SECRET", "") or _internal_secret
     if not _require_gateway_identity:
         logger.warning("VEXA_REQUIRE_GATEWAY_IDENTITY=0 — agent-api trusts unauthenticated X-User-Id headers "
                        "and leaves /invocations + /events open; never expose this port beyond localhost")
@@ -963,6 +967,10 @@ def create_app(
     def _secret_matches(provided: str) -> bool:
         return bool(_internal_secret) and bool(provided) and hmac.compare_digest(
             provided.encode(), _internal_secret.encode())
+
+    def _gateway_matches(provided: str) -> bool:
+        return bool(_gateway_identity) and bool(provided) and hmac.compare_digest(
+            provided.encode(), _gateway_identity.encode())
 
     def require_internal_caller(request: Request) -> None:
         """Gate for the internal-only sinks (/invocations, /events): their envelopes name their own
@@ -983,7 +991,7 @@ def create_app(
         missing/wrong or the header is absent. The ``VEXA_AGENT_DEFAULT_SUBJECT`` single-user fallback is
         honored ONLY in the explicit opt-out mode (VEXA_REQUIRE_GATEWAY_IDENTITY=0)."""
         if _require_gateway_identity:
-            if not _secret_matches(request.headers.get("x-gateway-verified", "")):
+            if not _gateway_matches(request.headers.get("x-gateway-verified", "")):
                 raise HTTPException(status_code=401, detail="gateway-verified identity required")
             uid = request.headers.get("x-user-id")
             if uid:

@@ -21,7 +21,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from referencing import Registry, Resource
 
-from ..callback_auth import check_bot_callback
+from ..callback_auth import check_bot_binding, verify_bot_credential
 from .machine import IllegalTransition, LifecycleSink, MeetingStore, TransitionSource
 from .webhook import build_status_change_envelope, build_typed_envelope
 from ..obs import TraceMiddleware, log_event
@@ -88,11 +88,15 @@ def create_app(
 
     @app.post("/bots/internal/callback/lifecycle")
     async def lifecycle_callback(request: Request) -> JSONResponse:
-        # 0. C4 trust edge — the same guard the unified app applies (callback_auth.py).
-        verdict = check_bot_callback(request.headers)
+        # 0. C4 trust edge — the same guard the unified app applies (callback_auth.py): the bot's
+        #    MeetingToken, bound to the event's connection_id.
+        verdict, claims = verify_bot_credential(request.headers)
         if verdict is not None:
             return JSONResponse(status_code=verdict[0], content={"detail": verdict[1]})
         body = await request.json()
+        verdict = check_bot_binding(claims, body)
+        if verdict is not None:
+            return JSONResponse(status_code=verdict[0], content={"detail": verdict[1]})
 
         # 1. Validate at the seam — jsonschema by path against the sealed contract.
         try:

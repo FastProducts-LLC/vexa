@@ -83,15 +83,17 @@ INTERNAL_SECRET_HEADER = "X-Internal-Secret"
 
 
 def internal_callback_headers(env: Optional[dict] = None) -> dict:
-    """The headers every RuntimeEvent callback carries. ``INTERNAL_API_SECRET`` (the stack's
-    internal service-to-service secret, the same value meeting-api holds) rides as
-    ``X-Internal-Secret`` so the receiver can tell the kernel's workload evidence from a forgery
-    by anything else on the network (meeting-api fails closed on it outside DEV_MODE — C4).
-    Unset ⇒ no header (a dev/lite stack with an open edge); never an empty header."""
+    """The headers every RuntimeEvent callback carries. ``RUNTIME_CALLBACK_SECRET`` (a value only the
+    runtime and meeting-api hold — C4 split; NOT the gateway identity marker or admin-api's internal
+    key) rides as ``X-Internal-Secret`` so the receiver can tell the kernel's workload evidence from
+    a forgery by anything else on the network (meeting-api fails closed on it outside DEV_MODE).
+    Falls back to the legacy shared ``INTERNAL_API_SECRET`` when unset (an un-migrated deployment).
+    Neither set ⇒ no header (a dev/lite stack with an open edge); never an empty header."""
     import os
 
     source = os.environ if env is None else env
-    secret = (source.get("INTERNAL_API_SECRET") or "").strip()
+    secret = (source.get("RUNTIME_CALLBACK_SECRET") or "").strip() or (
+        source.get("INTERNAL_API_SECRET") or "").strip()
     return {INTERNAL_SECRET_HEADER: secret} if secret else {}
 
 

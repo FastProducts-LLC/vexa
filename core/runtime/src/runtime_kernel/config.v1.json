@@ -41,8 +41,21 @@
    "class": "defaulted",
    "default": "(unset — RuntimeEvent callbacks then carry no X-Internal-Secret header)",
    "secret": true,
-   "description": "the stack's internal service-to-service secret (same value as meeting-api / admin-api / gateway); stamped as X-Internal-Secret on every RuntimeEvent callback the kernel posts to a workload's callbackUrl, so meeting-api can authenticate workload evidence (C4) — meeting-api refuses callbacks without it outside DEV_MODE",
-   "targets": ["compose", "helm", "lite"]
+   "description": "DEPRECATED: fallback for RUNTIME_CALLBACK_SECRET when unset (helm / lite). Stamped as X-Internal-Secret on RuntimeEvent callbacks",
+   "targets": [
+    "helm",
+    "lite"
+   ]
+  },
+  {
+   "key": "RUNTIME_CALLBACK_SECRET",
+   "class": "defaulted",
+   "default": "(falls back to INTERNAL_API_SECRET)",
+   "secret": true,
+   "targets": [
+    "compose"
+   ],
+   "description": "stamped as X-Internal-Secret on every RuntimeEvent callback the kernel posts to a workload's callbackUrl, so meeting-api can authenticate workload evidence (C4 split: only runtime + meeting-api hold it)"
   },
   {
    "key": "REDIS_URL",

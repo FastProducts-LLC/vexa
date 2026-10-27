@@ -159,7 +159,9 @@ async function fileSize(path: string): Promise<number | null> {
  */
 export function streamingTapeUploader(inv: Invocation, url: string, timeoutMs: number): TapeUploader {
   const sessionUid = inv.connectionId ?? '';
-  const token = inv.internalSecret ?? '';
+  // C4: authenticate with the bot's own MeetingToken (bound to this session); meeting-api no longer
+  // accepts a shared secret here. internalSecret is only a fallback for an older meeting-api.
+  const token = inv.token ?? inv.internalSecret ?? '';
   const meetingId = inv.meeting_id ?? 0;
 
   return (part, filePath, size) => new Promise<void>((resolve, reject) => {

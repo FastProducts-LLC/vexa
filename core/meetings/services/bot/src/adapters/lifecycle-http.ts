@@ -5,9 +5,9 @@
  * meeting-api callback URL (`inv.meetingApiCallbackUrl`). 0.11 convention:
  *   • headers: `content-type: application/json` + (if set) `x-internal-secret: <internalSecret>`
  *     + (if set) `authorization: Bearer <token>` — the bot's own MeetingToken (invocation.v1 `token`).
- *     meeting-api accepts EITHER credential (C4 trust edge, fail-closed outside DEV_MODE); sending
- *     both keeps an older meeting-api working and lets a newer one stop handing bots the
- *     deployment-wide internal secret.
+ *     meeting-api authenticates the callback with that token ONLY, and only for the token's own
+ *     `connection_id` (C4). It no longer hands bots a deployment secret; `internalSecret` is set only
+ *     in its BOT_LEGACY_INTERNAL_SECRET compat mode, where it carries the same MeetingToken.
  *   • body: the lifecycle.v1 event JSON, as-is (no envelope)
  *
  * L3-testable via an INJECTED `fetchImpl` (defaults to Node 22's native `fetch` — NO new dep).
@@ -34,7 +34,8 @@ export interface HttpLifecycleSinkOptions {
   /** SECRET — sent as `x-internal-secret` when present (0.11 internal auth). */
   internalSecret?: string;
   /** SECRET — the bot's MeetingToken (invocation.v1 `token`), sent as `authorization: Bearer` when
-   *  present. meeting-api verifies it (HS256, ADMIN_TOKEN) as the bot's own identity (C4). */
+   *  present. meeting-api verifies it (HS256, MEETING_TOKEN_SECRET) and binds it to the event's
+   *  connection_id (C4). */
   token?: string;
   /** Injected for the L3 test; defaults to Node 22's native global `fetch`. */
   fetchImpl?: FetchLike;

@@ -459,8 +459,10 @@ def create_app(
     # agent-api honors X-User-Id only alongside X-Gateway-Verified == the internal-tier secret, so a
     # direct (non-gateway) caller on the compose network cannot pose as a user. Stamped ONLY on agent
     # forwards (meeting-api / admin-api / mcp never see the secret through this path).
-    _gateway_secret = internal_api_secret if internal_api_secret is not None else os.getenv(
-        "INTERNAL_API_SECRET", "")
+    # C4 split: the marker is GATEWAY_IDENTITY_SECRET — NOT admin-api's internal key and never a value
+    # a bot holds. Legacy fallback: INTERNAL_API_SECRET.
+    _gateway_secret = internal_api_secret if internal_api_secret is not None else (
+        os.getenv("GATEWAY_IDENTITY_SECRET") or os.getenv("INTERNAL_API_SECRET", ""))
 
     def _stamp_agent(url: str, headers: dict) -> dict:
         if _gateway_secret and url.startswith(f"{agent_api_url}/"):

@@ -30,6 +30,10 @@ def _open_internal_callback_edge(monkeypatch):
     DEV_MODE deployment (the open edge). `test_callback_auth.py` flips DEV_MODE off explicitly to
     prove the closed edge."""
     monkeypatch.setenv("DEV_MODE", "true")
+    for key in ("INTERNAL_API_SECRET", "GATEWAY_IDENTITY_SECRET", "ADMIN_API_INTERNAL_SECRET",
+                "RUNTIME_CALLBACK_SECRET", "MEETING_TOKEN_SECRET", "BOT_LEGACY_INTERNAL_SECRET",
+                "BOT_REDIS_ACL"):
+        monkeypatch.delenv(key, raising=False)
 
 
 # --- lifecycle.v1 goldens (the seam) ---------------------------------------------------
