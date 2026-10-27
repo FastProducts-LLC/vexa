@@ -1,7 +1,8 @@
 """MeetingToken minter — a faithful copy of meeting_api.bot_spawn.invocation.mint_meeting_token.
 
 The recordings upload (`POST /internal/recordings/upload`) authenticates with a MeetingToken: an
-HS256 JWS signed with the meeting-api's `token_secret` (== INTERNAL_API_SECRET in the compose stack).
+HS256 JWS signed with the meeting-api's `token_secret` (== MEETING_TOKEN_SECRET in the compose stack),
+bound to the session (`connection_id`) it may upload into (C4).
 We mint one here so the always-on recording proof can drive the bot's real upload path without
 spawning a bot. Kept in lock-step with the shipped minter (same claims, same signing).
 """
@@ -19,7 +20,7 @@ def _b64url(data: bytes) -> str:
 
 
 def mint_meeting_token(meeting_id: int, user_id: int, platform: str, native_meeting_id: str,
-                       *, secret: str, ttl_seconds: int = 7200) -> str:
+                       *, secret: str, ttl_seconds: int = 7200, connection_id: str | None = None) -> str:
     now = int(time.time())
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {
@@ -34,6 +35,8 @@ def mint_meeting_token(meeting_id: int, user_id: int, platform: str, native_meet
         "exp": now + ttl_seconds,
         "jti": str(uuid.uuid4()),
     }
+    if connection_id:
+        payload["connection_id"] = connection_id
     header_b64 = _b64url(json.dumps(header, separators=(",", ":")).encode())
     payload_b64 = _b64url(json.dumps(payload, separators=(",", ":")).encode())
     signing_input = f"{header_b64}.{payload_b64}".encode("ascii")

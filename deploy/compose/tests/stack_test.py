@@ -240,9 +240,10 @@ def test_05_recording_to_minio(stack):
     platform, native_id = "google_meet", f"rec-{uuid.uuid4().hex[:8]}"
     meeting_id, session_uid = _insert_meeting(stack, user_id, platform, native_id)
 
-    # The bot authenticates uploads with a MeetingToken (HS256, signed with ADMIN_TOKEN — the admin
-    # secret meeting-api mints AND verifies with, like main; INTERNAL_API_SECRET is a different concern).
-    token = mint_meeting_token(meeting_id, user_id, platform, native_id, secret=stack.admin_token)
+    # The bot authenticates uploads with its MeetingToken (HS256, MEETING_TOKEN_SECRET), bound to the
+    # session it uploads into (C4). A shared secret is not accepted; a token for another session is 403.
+    token = mint_meeting_token(meeting_id, user_id, platform, native_id, secret=stack.meeting_token_secret,
+                               connection_id=session_uid)
 
     chunk = _canonical_wav(b"gate-compose-recording-chunk-pcm-payload")
     fields = {
@@ -531,20 +532,21 @@ def test_07_webhook_delivery_outcome_reported(stack):
         """"webhook_events": {"meeting.status_change": true}}'::jsonb """
         f"WHERE id = {meeting_id};"
     )
-    # C4: the lifecycle callback is an authenticated edge — an unauthenticated POST is refused
-    # (403) and the FSM does not move; the bot's own credential (its internal secret) is accepted.
-    code, body = post_json(
-        f"{stack.meeting_api}/bots/internal/callback/lifecycle",
-        {"connection_id": session_uid, "status": "completed", "completion_reason": "stopped"},
-        timeout=20,
-    )
-    assert code == 403, f"unauthenticated lifecycle callback must be refused: {code} {body!r}"
-    code, body = post_json(
-        f"{stack.meeting_api}/bots/internal/callback/lifecycle",
-        {"connection_id": session_uid, "status": "completed", "completion_reason": "stopped"},
-        headers={"X-Internal-Secret": stack.internal_secret},
-        timeout=20,
-    )
+    # C4: the lifecycle callback is an authenticated edge. Refused (403, FSM unmoved): no credential,
+    # any shared deployment secret, and a MeetingToken bound to ANOTHER session. Accepted: the bot's
+    # own MeetingToken bound to this session.
+    event = {"connection_id": session_uid, "status": "completed", "completion_reason": "stopped"}
+    lifecycle = f"{stack.meeting_api}/bots/internal/callback/lifecycle"
+    other = mint_meeting_token(meeting_id, user_id, platform, native_id, secret=stack.meeting_token_secret,
+                               connection_id="another-session")
+    for headers in ({}, {"X-Internal-Secret": stack.admin_internal_secret},
+                    {"X-Internal-Secret": stack.internal_secret},
+                    {"Authorization": f"Bearer {other}"}):
+        code, body = post_json(lifecycle, event, headers=headers, timeout=20)
+        assert code == 403, f"lifecycle callback {list(headers)} must be refused: {code} {body!r}"
+    own = mint_meeting_token(meeting_id, user_id, platform, native_id, secret=stack.meeting_token_secret,
+                             connection_id=session_uid)
+    code, body = post_json(lifecycle, event, headers={"Authorization": f"Bearer {own}"}, timeout=20)
     assert code == 200, f"lifecycle callback: {code} {body!r}"
 
     deadline = time.time() + 30
