@@ -29,6 +29,8 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+from .trust_secrets import admin_api_internal_secret, meeting_token_secret
+
 log = logging.getLogger("meeting_api.entrypoint")
 
 
@@ -49,9 +51,9 @@ def _require_config(env: "os._Environ | dict | None" = None) -> None:
 
     ``config.v1.json`` (next to this module) declares every env key the service consumes; the
     vendored shared preflight raises ``ConfigError`` (a ``RuntimeError``) naming every missing
-    *required-explicit* key — today ADMIN_TOKEN, which HS256-signs the MeetingToken every spawn
-    mints (invocation.mint_meeting_token) AND the recordings-upload verifier checks; unset, the
-    deploy would 500 every POST /bots, so it refuses to boot instead. Capability tri-states
+    *required-explicit* key. The MeetingToken key (MEETING_TOKEN_SECRET, or the deprecated ADMIN_TOKEN
+    fallback) signs every spawn's token and verifies the bot callback + recordings upload; with
+    neither set the deploy would 500 every POST /bots, so it refuses to boot instead. Capability tri-states
     (stt · object_storage, incl. the STT live auth probe) are logged here and exposed on
     ``/health``; they never block boot.
     """
@@ -59,15 +61,41 @@ def _require_config(env: "os._Environ | dict | None" = None) -> None:
 
     preflight(env)
     _reject_default_secrets(env)
+    _require_meeting_token_secret(env)
+
+
+def _require_meeting_token_secret(env: "os._Environ | dict | None" = None) -> None:
+    """Without a MeetingToken key every POST /bots would 500 and every bot callback 503 — refuse
+    the boot instead (A4). MEETING_TOKEN_SECRET, or the deprecated ADMIN_TOKEN fallback."""
+    from .config_preflight import ConfigError
+
+    if not meeting_token_secret(os.environ if env is None else env):
+        raise ConfigError(
+            "MEETING_TOKEN_SECRET is not set (nor the deprecated ADMIN_TOKEN fallback): bots cannot be "
+            "issued or verify a MeetingToken"
+        )
 
 
 # The well-known placeholder values the stock compose file / .env.example / helm chart / lite image
 # have shipped. A deploy that boots with one of these runs with a PUBLIC secret (MeetingToken
-# forgery, internal-edge impersonation), so outside DEV_MODE the boot refuses instead.
+# forgery, internal-edge impersonation, an open database / object store), so outside DEV_MODE the
+# boot refuses instead.
 _KNOWN_DEFAULT_SECRETS = {
     "ADMIN_TOKEN": frozenset({"changeme", "change_me", "dev-admin-token", "admin-token", "token"}),
     "INTERNAL_API_SECRET": frozenset({"vexa-internal-secret", "lite-internal-secret", "changeme",
                                       "change_me", "secret"}),
+    # C4 split secrets: the same published placeholders must not slip in under the new names.
+    "GATEWAY_IDENTITY_SECRET": frozenset({"vexa-internal-secret", "lite-internal-secret", "changeme",
+                                          "change_me", "secret"}),
+    "ADMIN_API_INTERNAL_SECRET": frozenset({"vexa-internal-secret", "lite-internal-secret", "changeme",
+                                            "change_me", "secret"}),
+    "RUNTIME_CALLBACK_SECRET": frozenset({"vexa-internal-secret", "lite-internal-secret", "changeme",
+                                          "change_me", "secret"}),
+    "MEETING_TOKEN_SECRET": frozenset({"changeme", "change_me", "dev-admin-token", "admin-token", "token"}),
+    # C4: the infra credentials the stock compose file used to default — a deploy still on them has a
+    # world-readable database / object store on any network that also carries workloads.
+    "DB_PASSWORD": frozenset({"postgres", "password", "changeme", "change_me"}),
+    "MINIO_SECRET_KEY": frozenset({"vexa-secret-key", "minioadmin", "changeme", "change_me"}),
 }
 
 
@@ -141,10 +169,10 @@ def build_production_app():
     database_url = _database_url()
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     runtime_api_url = os.getenv("RUNTIME_API_URL", "http://runtime:8090")
-    # MeetingToken is HS256-signed (mint) AND verified (recordings upload) with the SAME secret =
-    # ADMIN_TOKEN, exactly like main. (INTERNAL_API_SECRET is for the gateway↔admin-api internal
-    # validation only — a different concern.) None → the recordings verifier falls back to ADMIN_TOKEN.
-    token_secret = os.getenv("ADMIN_TOKEN") or None
+    # MeetingToken is HS256-signed (mint) AND verified (lifecycle callback + recordings upload) with
+    # MEETING_TOKEN_SECRET — its own key since the C4 follow-up (it used to be ADMIN_TOKEN, admin-api's
+    # admin key). Unset → falls back to ADMIN_TOKEN with a deprecation warning (trust_secrets).
+    token_secret = meeting_token_secret() or None
 
     engine = build_engine(database_url)  # #635: env-steered pool (pool_pre_ping preserved in the helper)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -218,7 +246,7 @@ def build_production_app():
     # unavailable" and the route answers 404/503 accordingly.
     async def _calendar_sync_now(user_id: int, calendar_id: str | None = None):
         admin_api_url = (os.getenv("ADMIN_API_URL") or "").rstrip("/")
-        internal_secret = os.getenv("INTERNAL_API_SECRET") or ""
+        internal_secret = admin_api_internal_secret()
         if not (admin_api_url and internal_secret):
             return None
         import json as _json
@@ -577,7 +605,7 @@ def _attach_background_loops(
     auto_join_grace = float(os.getenv("AUTO_JOIN_GRACE_S", "600"))
     auto_join_backoff = float(os.getenv("AUTO_JOIN_RETRY_BACKOFF_S", "300"))
     admin_api_url = (os.getenv("ADMIN_API_URL") or "").rstrip("/")
-    internal_secret = os.getenv("INTERNAL_API_SECRET") or ""
+    internal_secret = admin_api_internal_secret()
     # Fail-closed default: with no admin edge configured the per-user cap is unresolvable, so the
     # sweep refuses to spawn rather than spawn uncapped. AUTO_JOIN_ALLOW_UNCAPPED=1 is the explicit
     # self-host opt-in that chooses the uncapped mode (never defaulted).
@@ -625,7 +653,7 @@ def _attach_background_loops(
                 publish_status=publish_status,
                 lead_s=auto_join_lead, grace_s=auto_join_grace,
                 retry_backoff_s=auto_join_backoff,
-                token_secret=os.getenv("ADMIN_TOKEN") or None,
+                token_secret=meeting_token_secret() or None,
                 redis_url=os.getenv("REDIS_URL"),
                 allow_uncapped=auto_join_allow_uncapped,
             )

@@ -38,7 +38,7 @@ def _put_transcription_setting(stack, payload: dict):
     to this internal endpoint (same method, body, and X-Internal-Secret header)."""
     return http(
         "PUT", f"{stack.admin_api}/internal/settings/transcription",
-        headers={"X-Internal-Secret": stack.internal_secret, "Content-Type": "application/json"},
+        headers={"X-Internal-Secret": stack.admin_internal_secret, "Content-Type": "application/json"},
         body=json.dumps(payload).encode(),
     )
 
@@ -57,7 +57,7 @@ def test_wizard_stt_flow(stack):
     # Baseline: the platform setting must start empty, or the RED leg proves nothing.
     code, body = http(
         "GET", f"{stack.admin_api}/internal/settings/transcription",
-        headers={"X-Internal-Secret": stack.internal_secret},
+        headers={"X-Internal-Secret": stack.admin_internal_secret},
     )
     assert code == 200, f"read transcription setting: {code} {body}"
     if (body.get("value") or {}).get("url"):

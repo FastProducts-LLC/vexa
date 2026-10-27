@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Optional
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
@@ -29,6 +28,20 @@ from .service import (
     upload_chunk,
     upload_signal_tape,
 )
+
+
+def _authorize_upload(authorization: Optional[str], session_uid: str, token_secret: Optional[str]) -> int:
+    """C4: verify the bot's MeetingToken for an upload into ``session_uid``; return its meeting_id.
+    401 for a missing/invalid token, 403 for a token bound to a different session."""
+    bearer = _bearer_token(authorization)
+    try:
+        claims = _verify_meeting_token(bearer, secret=token_secret)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid recording upload token: {e}")
+    bound_session = claims.get("connection_id")
+    if bound_session is not None and str(bound_session) != str(session_uid):
+        raise HTTPException(status_code=403, detail="MeetingToken is bound to a different session")
+    return int(claims["meeting_id"])
 
 
 def _bearer_token(authorization: Optional[str]) -> str:
@@ -154,16 +167,8 @@ def build_router(
         # server path: no JSONB fold, no chunking, no master. See service.upload_signal_tape.
         if media_type == SIGNAL_MEDIA_TYPE:
             part = str(meta.get("part") or "")
-            bearer = _bearer_token(authorization)
-            internal_secret = os.getenv("INTERNAL_API_SECRET")
-            token_meeting_id = None
-            if not (internal_secret and bearer == internal_secret):
-                try:
-                    claims = _verify_meeting_token(bearer, secret=token_secret)
-                except ValueError as e:
-                    raise HTTPException(status_code=401,
-                                        detail=f"Invalid recording upload token: {e}")
-                token_meeting_id = int(claims["meeting_id"])
+            # C4: only the bot's own MeetingToken (bound to its session) — no shared secret.
+            token_meeting_id = _authorize_upload(authorization, session_uid, token_secret)
             try:
                 receipt = await upload_signal_tape(
                     repo, storage,
@@ -181,19 +186,12 @@ def build_router(
         duration_seconds = duration_seconds if duration_seconds is not None else meta.get("duration_seconds")
         sample_rate = sample_rate if sample_rate is not None else meta.get("sample_rate")
 
-        # Auth: accept either the INTERNAL_API_SECRET (the bot's internal upload uses it, like the
-        # lifecycle callback; meeting is scoped by session_uid) OR a MeetingToken (carries its meeting_id).
-        bearer = _bearer_token(authorization)
-        internal_secret = os.getenv("INTERNAL_API_SECRET")
-        token_meeting_id: Optional[int] = None
-        if internal_secret and bearer == internal_secret:
-            token_meeting_id = None  # internal auth → scope by session; skip the MeetingToken cross-check
-        else:
-            try:
-                claims = _verify_meeting_token(bearer, secret=token_secret)
-            except ValueError as e:
-                raise HTTPException(status_code=401, detail=f"Invalid recording upload token: {e}")
-            token_meeting_id = int(claims["meeting_id"])
+        # Auth (C4): ONLY the bot's own MeetingToken (HS256, MEETING_TOKEN_SECRET), bound to its
+        # meeting_id and (for tokens minted since the C4 follow-up) its connection_id. The shared
+        # INTERNAL_API_SECRET bearer is no longer accepted: bots do not hold it any more, and with it
+        # any holder could write into ANY session. The stock bot sends `Bearer <invocation.internalSecret>`;
+        # in BOT_LEGACY_INTERNAL_SECRET mode that slot carries the same MeetingToken.
+        token_meeting_id: Optional[int] = _authorize_upload(authorization, session_uid, token_secret)
 
         data = await file.read()
         try:

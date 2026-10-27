@@ -164,12 +164,17 @@ def test_upload_route_accepts_a_signal_tape(monkeypatch):
     assert client.get("/recordings", headers={"x-user-id": str(USER)}).json()["recordings"] == []
 
 
-def test_upload_route_accepts_the_internal_secret(monkeypatch):
-    """The bot authenticates its tape with INTERNAL_API_SECRET, the same credential the recording
-    chunks and the lifecycle callback already use — no new secret crosses to the bot for this."""
+def test_upload_route_refuses_the_shared_internal_secret(monkeypatch):
+    """C4 follow-up: bots no longer hold INTERNAL_API_SECRET (it was also the gateway identity marker
+    and admin-api's key). The tape authenticates with the bot's own MeetingToken, bound to its session."""
     monkeypatch.setenv("INTERNAL_API_SECRET", INTERNAL)
     repo, storage = _seeded()
-    r = _post_tape(_client_for(repo, storage), part="stt", data=STT_TAPE, auth=INTERNAL)
+    client = _client_for(repo, storage)
+    assert _post_tape(client, part="stt", data=STT_TAPE, auth=INTERNAL).status_code == 401
+    other = mint_meeting_token(MEETING_ID, USER, "google_meet", "abc", secret=SECRET, connection_id="other-session")
+    assert _post_tape(client, part="stt", data=STT_TAPE, auth=other).status_code == 403
+    bound = mint_meeting_token(MEETING_ID, USER, "google_meet", "abc", secret=SECRET, connection_id=SESSION_UID)
+    r = _post_tape(client, part="stt", data=STT_TAPE, auth=bound)
     assert r.status_code == 200, r.text
 
 

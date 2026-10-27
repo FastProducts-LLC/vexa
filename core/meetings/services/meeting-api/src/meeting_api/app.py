@@ -193,6 +193,13 @@ def create_app(
     app = FastAPI(title="Vexa Meeting API (v0.12)", version="0.12.0")
     # The edge: read/mint X-Trace-Id and bind it for the request (logevent.v1 trace_id).
     app.add_middleware(TraceMiddleware)
+    # Gateway trust edge (C4, ported from fpn): any request asserting an x-user-* identity must carry the
+    # gateway's X-Gateway-Verified marker == GATEWAY_IDENTITY_SECRET (legacy fallback INTERNAL_API_SECRET);
+    # fails closed when neither is set outside DEV_MODE. See internal_auth.py. Without it, anything on the
+    # `vexa` or `bots` network (every spawned bot) could send `x-user-id: <victim>` and act as that user.
+    from .internal_auth import InternalIdentityMiddleware
+
+    app.add_middleware(InternalIdentityMiddleware)
 
     # --- shared liveness probe (gate:health): the unified process is up. No auth. The ADDITIVE
     # `capabilities` rows are the config.v1 tri-states (stt · object_storage) incl. the cached STT
@@ -250,6 +257,7 @@ def create_app(
         redis,
         transcript_finalizer,
         delivery_ledger,
+        token_secret=token_secret,
     )
 
     # --- bot_spawn: POST /bots (invocation.v1 + runtime.v1) ---
@@ -351,6 +359,7 @@ def _mount_lifecycle(
     redis: "object" = None,
     transcript_finalizer: "object" = None,
     delivery_ledger: "object" = None,
+    token_secret: Optional[str] = None,
 ) -> None:
     """Register the lifecycle.v1 callback route on the unified app (the lifecycle receiver's
     ``/bots/internal/callback/lifecycle`` handler, sharing the app's TraceMiddleware).
@@ -371,6 +380,7 @@ def _mount_lifecycle(
 
     from .lifecycle.machine import IllegalTransition, TransitionSource
     from .lifecycle.provenance import build_service_provenance
+    from .callback_auth import check_bot_binding, check_runtime_callback, verify_bot_credential
     from .lifecycle.receiver import conforms
     from .lifecycle.webhook import build_status_change_envelope, build_typed_envelope
     from .obs import log_event
@@ -632,6 +642,16 @@ def _mount_lifecycle(
                         span="lifecycle.callback",
                         fields={"meeting_id": meeting_row.get("id"), "error": str(e)},
                     )
+        # C4: the run is over — delete the bot's per-meeting Redis ACL user (BOT_REDIS_ACL). Best-effort.
+        if (
+            not change.no_op
+            and rec.status is not None
+            and rec.status.value in ("completed", "failed")
+            and rec.connection_id
+        ):
+            from .bot_spawn.service import _revoke_bot_redis
+
+            await _revoke_bot_redis(rec.connection_id)
         # Build the TYPED event the transition maps to (meeting.started on active,
         # meeting.completed with the post-meeting envelope on completion, bot.failed on terminal
         # failure) — additive alongside meeting.status_change, never instead of it. Built AFTER the
@@ -881,7 +901,19 @@ def _mount_lifecycle(
 
     @app.post("/bots/internal/callback/lifecycle")
     async def lifecycle_callback(request: Request) -> JSONResponse:
-        body = await request.json()
+        # C4 trust edge: only the bot itself — its MeetingToken, bound to its own session — may drive
+        # the FSM. The credential is checked BEFORE the body is parsed, the binding right after.
+        verdict, claims = verify_bot_credential(request.headers, token_secret=token_secret)
+        if verdict is None:
+            try:
+                body = await request.json()
+            except Exception:  # noqa: BLE001 — a non-JSON body cannot name a session
+                body = None
+            verdict = check_bot_binding(claims, body)
+        if verdict is not None:
+            log_event("lifecycle_callback_refused", audience="system", level="warning",
+                      span="lifecycle.callback", fields={"status": verdict[0], "detail": verdict[1]})
+            return JSONResponse(status_code=verdict[0], content={"detail": verdict[1]})
         status_code, content = await _apply_lifecycle_event(
             body, transition_source=TransitionSource.BOT_CALLBACK
         )
@@ -911,6 +943,13 @@ def _mount_lifecycle(
         completed`` is illegal for a bot-driven edge). The direct in-process call advances the SAME FSM
         instance, and the runtime-destroy source forces the terminal edge on real teardown evidence, so
         the meeting reaches terminal, the reaper stops, and the copilot ``session_end`` reap fires."""
+        # C4 trust edge: only the runtime kernel (x-internal-secret == INTERNAL_API_SECRET) may
+        # post workload evidence — a forged `destroyed` would otherwise fail/complete a live meeting.
+        verdict = check_runtime_callback(request.headers)
+        if verdict is not None:
+            log_event("runtime_callback_refused", audience="system", level="warning",
+                      span="runtime.callback", fields={"status": verdict[0], "detail": verdict[1]})
+            return JSONResponse(status_code=verdict[0], content={"detail": verdict[1]})
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001

@@ -212,6 +212,39 @@ def test_upload_route_requires_token():
     assert r.status_code == 401  # missing Authorization
 
 
+def test_upload_route_shared_internal_secret_bearer_is_refused(monkeypatch):
+    """C4 follow-up: bots no longer hold INTERNAL_API_SECRET, and with it any holder could write into
+    ANY session — the upload accepts only the bot's MeetingToken now."""
+    monkeypatch.setenv("INTERNAL_API_SECRET", "isec-123")
+    r = _client().post(
+        "/internal/recordings/upload",
+        headers={"Authorization": "Bearer isec-123"},
+        data={"session_uid": SESSION_UID, "media_format": "wav", "chunk_seq": 0, "is_final": "true"},
+        files={"file": ("c.wav", _wav(), "audio/wav")},
+    )
+    assert r.status_code == 401, r.text
+
+
+def test_upload_route_token_bound_to_another_session_is_403():
+    client = _client()
+    other = mint_meeting_token(MEETING_ID, USER, "google_meet", "x", secret=SECRET, connection_id="another-session")
+    r = client.post(
+        "/internal/recordings/upload",
+        headers={"Authorization": f"Bearer {other}"},
+        data={"session_uid": SESSION_UID, "media_format": "wav", "chunk_seq": 0, "is_final": "true"},
+        files={"file": ("c.wav", _wav(), "audio/wav")},
+    )
+    assert r.status_code == 403, r.text
+    bound = mint_meeting_token(MEETING_ID, USER, "google_meet", "x", secret=SECRET, connection_id=SESSION_UID)
+    ok = client.post(
+        "/internal/recordings/upload",
+        headers={"Authorization": f"Bearer {bound}"},
+        data={"session_uid": SESSION_UID, "media_format": "wav", "chunk_seq": 0, "is_final": "true"},
+        files={"file": ("c.wav", _wav(), "audio/wav")},
+    )
+    assert ok.status_code == 200, ok.text
+
+
 def test_upload_route_accepts_valid_token():
     client = _client()
     token = mint_meeting_token(MEETING_ID, USER, "google_meet", "abc", secret=SECRET)

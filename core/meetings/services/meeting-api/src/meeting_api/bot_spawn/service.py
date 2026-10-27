@@ -195,7 +195,9 @@ async def _fetch_bot_context(user_id: int) -> dict:
     calls that can each fail differently.
     """
     admin_api_url = (os.getenv("ADMIN_API_URL") or "").rstrip("/")
-    internal_secret = os.getenv("INTERNAL_API_SECRET") or ""
+    from ..trust_secrets import admin_api_internal_secret
+
+    internal_secret = admin_api_internal_secret()
     if not (admin_api_url and internal_secret):
         return {}
     try:
@@ -233,6 +235,19 @@ def _capture_signal_from_context(ctx: dict) -> bool:
     turn collection off fleet-wide. The kill switch is an explicit ``false``, nothing else.
     """
     return ctx.get("capture_signal") is not False
+
+
+async def _revoke_bot_redis(connection_id: str) -> None:
+    """Best-effort delete of the bot's per-meeting Redis ACL user (no-op unless BOT_REDIS_ACL)."""
+    from . import redis_acl as _redis_acl
+
+    if not _redis_acl.enabled():
+        return
+    try:
+        await _redis_acl.default().revoke(connection_id)
+    except Exception as e:  # noqa: BLE001 — revocation is best-effort; the user is scoped to a dead run
+        log_event("bot_redis_acl_revoke_failed", audience="system", level="warning",
+                  span="bots.create", fields={"connection_id": connection_id, "error": str(e)})
 
 
 def construct_meeting_url(
@@ -688,9 +703,9 @@ async def request_bot(
     # 4. MeetingToken + invocation. connection_id IS the session_uid (parent's connectionId).
     redis_url = redis_url or os.getenv("REDIS_URL", "redis://redis:6379/0")
     meeting_api_url = meeting_api_url or os.getenv("MEETING_API_URL", "http://meeting-api:8080")
-    internal_secret = internal_secret if internal_secret is not None else os.getenv(
-        "INTERNAL_API_SECRET"
-    )
+    # C4: bots never receive a deployment secret. `internal_secret` is accepted for signature
+    # compatibility and ignored; see the invocation below for what (if anything) fills the slot.
+    del internal_secret
     # STT creds were resolved and gated at step 1b (before the meeting-row write); the resolved
     # transcription_service_url/token/model flow into the invocation below. Without either the bot
     # joins + captures but cannot transcribe — None-safe: omitted from the invocation when unset
@@ -699,8 +714,26 @@ async def request_bot(
     # transcription dies mid-meeting when the JWT expires. Default 5h; override per deployment.
     token_ttl_seconds = int(os.getenv("MEETING_TOKEN_TTL_SECONDS") or 18000)
     token = mint_meeting_token(
-        meeting_id, user_id, platform, native_meeting_id, secret=token_secret, ttl_seconds=token_ttl_seconds
+        meeting_id, user_id, platform, native_meeting_id, secret=token_secret, ttl_seconds=token_ttl_seconds,
+        connection_id=connection_id,
     )
+    # C4: the bot's credential is its own MeetingToken, bound to this connection_id. The STOCK upstream
+    # bot image only knows `invocation.internalSecret` (x-internal-secret on lifecycle, Bearer on upload),
+    # so BOT_LEGACY_INTERNAL_SECRET=true puts the SAME per-bot token into that slot — never a shared secret.
+    from ..trust_secrets import bot_legacy_internal_secret
+
+    bot_internal_secret = token if bot_legacy_internal_secret() else None
+    # C4: per-meeting Redis ACL user (BOT_REDIS_ACL=true) instead of meeting-api's own Redis credential.
+    from . import redis_acl as _redis_acl
+
+    if _redis_acl.enabled():
+        try:
+            redis_url = await _redis_acl.default().provision(meeting_id=meeting_id, connection_id=connection_id)
+        except Exception as e:  # noqa: BLE001 — never fall back to the service credential
+            log_event("bot_spawn_redis_acl_failed", audience="system", level="error",
+                      span="bots.create", user_id=user_id, meeting_id=str(meeting_id),
+                      fields={"error": str(e)})
+            raise SpawnFailed(f"could not provision the bot's Redis ACL user: {e}") from e
     invocation = build_invocation(
         meeting_id=meeting_id,
         platform=platform,
@@ -715,7 +748,7 @@ async def request_bot(
         transcription_tier=transcription_tier,
         redis_url=redis_url,
         meeting_api_callback_url=f"{meeting_api_url}/bots/internal/callback/lifecycle",
-        internal_secret=internal_secret,
+        internal_secret=bot_internal_secret,
         transcribe_enabled=transcribe_enabled,
         transcription_service_url=transcription_service_url,
         transcription_service_token=transcription_service_token,
@@ -771,8 +804,10 @@ async def request_bot(
             "bot_spawn_quota_exceeded", audience="user", level="warning",
             span="bots.create", user_id=user_id, meeting_id=str(meeting_id),
         )
+        await _revoke_bot_redis(connection_id)
         raise
     except SpawnFailed as e:
+        await _revoke_bot_redis(connection_id)
         # No workload came up. Mark the just-inserted meeting row `failed` with the reason so no
         # `requested` row lingers for the 5-minute reaper to flip reason-less (#718): the failure and
         # its cause are on the row NOW, and POST /bots answers 502 with the same reason. The row is
@@ -819,6 +854,7 @@ async def request_bot(
             span="bots.create", user_id=user_id, meeting_id=str(meeting_id),
             fields={"workload_id": workload_id, "error": str(e)},
         )
+        await _revoke_bot_redis(connection_id)
         raise SpawnFailed(
             f"post-spawn DB write failed; workload {workload_id} torn down"
         ) from e

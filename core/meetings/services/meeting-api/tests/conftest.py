@@ -23,6 +23,19 @@ def _stt_configured(monkeypatch):
     monkeypatch.setenv("TRANSCRIPTION_SERVICE_TOKEN", "test-stt-token")
 
 
+@pytest.fixture(autouse=True)
+def _open_internal_callback_edge(monkeypatch):
+    """C4: the bot lifecycle callback and the runtime callback are fail-closed trust edges
+    (callback_auth.py). The suite drives both in-process without credentials, so it runs as a
+    DEV_MODE deployment (the open edge). `test_callback_auth.py` flips DEV_MODE off explicitly to
+    prove the closed edge."""
+    monkeypatch.setenv("DEV_MODE", "true")
+    for key in ("INTERNAL_API_SECRET", "GATEWAY_IDENTITY_SECRET", "ADMIN_API_INTERNAL_SECRET",
+                "RUNTIME_CALLBACK_SECRET", "MEETING_TOKEN_SECRET", "BOT_LEGACY_INTERNAL_SECRET",
+                "BOT_REDIS_ACL"):
+        monkeypatch.delenv(key, raising=False)
+
+
 # --- lifecycle.v1 goldens (the seam) ---------------------------------------------------
 
 def _repo_root() -> Path:

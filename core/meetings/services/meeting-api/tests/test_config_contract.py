@@ -47,9 +47,14 @@ def test_declaration_loads_and_is_internally_consistent():
     # are exactly the two keys the original ad-hoc guard checked
     stt_keys = {k["key"] for k in decl["keys"] if k.get("capability") == "stt"}
     assert stt_keys == {"TRANSCRIPTION_SERVICE_URL", "TRANSCRIPTION_SERVICE_TOKEN"}
-    # required-explicit is exactly the A4 boot bar
+    # No key is required-explicit any more: the A4 boot bar is "a MeetingToken key exists" —
+    # MEETING_TOKEN_SECRET or the deprecated ADMIN_TOKEN fallback (C4 split) — enforced by
+    # __main__._require_meeting_token_secret, since the declaration cannot express "one of".
     required = {k["key"] for k in decl["keys"] if k["class"] == "required-explicit"}
-    assert required == {"ADMIN_TOKEN"}
+    assert required == set()
+    keys = {k["key"] for k in decl["keys"]}
+    assert {"MEETING_TOKEN_SECRET", "GATEWAY_IDENTITY_SECRET", "ADMIN_API_INTERNAL_SECRET",
+            "RUNTIME_CALLBACK_SECRET", "BOT_LEGACY_INTERNAL_SECRET", "BOT_REDIS_ACL"} <= keys
 
 
 def test_db_pool_keys_declared_defaulted():
@@ -67,11 +72,17 @@ def test_db_pool_keys_declared_defaulted():
 # ── boot preflight (A4, now declaration-driven) ──────────────────────────────────────────────────
 
 
-def test_preflight_refuses_to_boot_without_admin_token(monkeypatch):
+def test_boot_refuses_without_any_meeting_token_key(monkeypatch):
+    from meeting_api.__main__ import _require_config
+
     monkeypatch.delenv("ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("MEETING_TOKEN_SECRET", raising=False)
+    monkeypatch.setattr(cp, "_run_probe", lambda spec, env: {"ok": True, "status": 405})
     with pytest.raises(cp.ConfigError) as ei:
-        cp.preflight()
-    assert "ADMIN_TOKEN" in str(ei.value), "the boot error must NAME the missing required key"
+        _require_config()
+    assert "MEETING_TOKEN_SECRET" in str(ei.value), "the boot error must NAME the missing key"
+    monkeypatch.setenv("MEETING_TOKEN_SECRET", "a-real-key")
+    _require_config()
 
 
 def test_preflight_reports_capability_rows(monkeypatch):

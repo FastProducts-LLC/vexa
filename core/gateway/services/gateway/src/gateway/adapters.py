@@ -86,7 +86,8 @@ class AdminApiAuthorizer:
         import httpx
 
         headers = {TRACE_HEADER: get_trace_id() or ""}
-        internal_secret = os.getenv("INTERNAL_API_SECRET", "")
+        # admin-api's internal key (C4 split): ADMIN_API_INTERNAL_SECRET, legacy INTERNAL_API_SECRET.
+        internal_secret = os.getenv("ADMIN_API_INTERNAL_SECRET") or os.getenv("INTERNAL_API_SECRET", "")
         if internal_secret:
             headers["X-Internal-Secret"] = internal_secret
         try:
@@ -123,6 +124,11 @@ class AdminApiAuthorizer:
             # subscribe path fail-safe — surface it as an authorization error, not an unhandled 500.
             return {"authorized": [], "errors": [f"authorization_unavailable:{e}"]}
         if user_data:
+            # meeting-api honors x-user-* only alongside the gateway marker (== GATEWAY_IDENTITY_SECRET,
+            # C4; legacy fallback INTERNAL_API_SECRET).
+            identity_secret = os.getenv("GATEWAY_IDENTITY_SECRET") or os.getenv("INTERNAL_API_SECRET", "")
+            if identity_secret:
+                auth_headers["x-gateway-verified"] = identity_secret
             auth_headers["x-user-id"] = str(user_data["user_id"])
             auth_headers["x-user-scopes"] = ",".join(user_data.get("scopes", []))
             auth_headers["x-user-limits"] = str(user_data.get("max_concurrent", 3))
@@ -198,6 +204,14 @@ def build_production_app(
     # reject every /internal/validate hop (503 on every API-key check), the 2026-04-23 shape. Fail
     # loud at boot with one message naming the missing key, instead of coming up green and 503ing.
     preflight()
+    # #526 + C4 split: an admin-api internal key must exist (the split name or the legacy one).
+    if not (os.getenv("ADMIN_API_INTERNAL_SECRET") or os.getenv("INTERNAL_API_SECRET")):
+        from .config_preflight import ConfigError
+
+        raise ConfigError(
+            "gateway refuses to boot: ADMIN_API_INTERNAL_SECRET (or the deprecated INTERNAL_API_SECRET) "
+            "is not set — every API-key check against admin-api /internal/validate would 503"
+        )
 
     admin_api_url = admin_api_url or os.getenv("ADMIN_API_URL", "http://admin-api:8001")
     meeting_api_url = meeting_api_url or os.getenv("MEETING_API_URL", "http://meeting-api:8080")

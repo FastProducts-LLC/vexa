@@ -117,12 +117,12 @@ digest-audit:
 	 done; \
 	 [ "$$fail" = 0 ] && echo "✓ digest audit clean — every $$_tag image on this host is the published artifact" || exit 1
 
-## _seed_env — seed .env from .env.example if absent, then fill an EMPTY ADMIN_TOKEN /
-## INTERNAL_API_SECRET with a random value (the compose file has no defaults for them and refuses to
+## _seed_env — seed .env from .env.example if absent, then fill every EMPTY stack secret (ADMIN_TOKEN,
+## the C4 split secrets, …) with a random value (the compose file has no defaults for them and refuses to
 ## start while they are unset). A value already set in .env is never touched.
 _seed_env:
 	@[ -f .env ] || { echo "→ no .env found; seeding from .env.example"; cp .env.example .env; }
-	@for k in ADMIN_TOKEN INTERNAL_API_SECRET; do \
+	@for k in ADMIN_TOKEN GATEWAY_IDENTITY_SECRET ADMIN_API_INTERNAL_SECRET RUNTIME_CALLBACK_SECRET MEETING_TOKEN_SECRET DB_PASSWORD MINIO_SECRET_KEY REDIS_PASSWORD NEXTAUTH_SECRET VEXA_DISPATCH_SIGNING_KEY; do \
 	   v=$$(grep -E "^$$k=" .env | head -1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$$//; s/[[:space:]]+$$//'); \
 	   if [ -z "$$v" ]; then \
 	     r=$$(openssl rand -hex 32 2>/dev/null || od -An -N32 -tx1 /dev/urandom | tr -d ' \n'); \

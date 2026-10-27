@@ -158,15 +158,19 @@ def test_client_supplied_marker_and_internal_secret_are_stripped():
     client.get("/agent/sessions", headers={**AUTH, "x-internal-secret": "forged"})
     assert "x-internal-secret" not in downstream.last["headers"]
     client.get("/meetings", headers={**AUTH, "x-gateway-verified": "forged", "x-internal-secret": "forged"})
-    assert "x-gateway-verified" not in downstream.last["headers"]
+    # C4: meeting-api forwards now carry the gateway's OWN marker — never the client's forged one.
+    assert downstream.last["headers"].get("x-gateway-verified") == "gw-secret"
     assert "x-internal-secret" not in downstream.last["headers"]
 
 
-def test_meeting_forward_never_carries_the_secret():
+def test_meeting_forward_carries_the_identity_marker():
+    """C4 (ported from fpn): meeting-api now enforces the marker on every x-user-* request, so the
+    gateway stamps it on meeting-api forwards too — the identity secret, never admin-api's key."""
     client, downstream = _secret_client()
     client.get("/meetings", headers=AUTH)
     assert downstream.last["url"].startswith("http://meeting-api")
-    assert "x-gateway-verified" not in downstream.last["headers"]
+    assert downstream.last["headers"]["x-gateway-verified"] == "gw-secret"
+    assert "x-internal-secret" not in downstream.last["headers"]
 
 
 def test_keyless_agent_call_never_gets_marker():

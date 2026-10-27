@@ -62,7 +62,9 @@ function defaultChunkUploader(inv: Invocation, log: (m: string) => void): ChunkU
   const url = inv.recordingUploadUrl;
   const meetingId = inv.meeting_id ?? 0;
   const sessionUid = inv.connectionId ?? '';
-  const token = inv.internalSecret ?? '';
+  // C4: authenticate with the bot's own MeetingToken (bound to this session); meeting-api no longer
+  // accepts a shared secret here. internalSecret is only a fallback for an older meeting-api.
+  const token = inv.token ?? inv.internalSecret ?? '';
   const svc = new RecordingService(meetingId, sessionUid);
   return async (seq, isFinal, format, bytes) => {
     if (!url) {

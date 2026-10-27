@@ -139,3 +139,29 @@ def test_scheduler_client_stamps_internal_secret_on_jobs(monkeypatch):
     SchedulerHttpClient("http://runtime:8090").schedule(
         {"cron": "* * * * *", "request": {"method": "POST", "url": "http://a/invocations", "body": {}}})
     assert "headers" not in seen["body"]["request"]
+
+
+# ── C4 split: the gateway identity marker and the internal tier are DIFFERENT secrets ─────────────
+
+IDENTITY = "gw-identity-secret"
+
+
+@pytest.fixture
+def split_env(prod_env, monkeypatch):
+    monkeypatch.setenv("VEXA_GATEWAY_IDENTITY_SECRET", IDENTITY)
+
+
+def test_split_identity_marker_accepts_only_the_gateway_identity_secret(split_env, tmp_path):
+    c, _ = _client(tmp_path)
+    ok = c.get("/api/sessions", headers={"X-User-Id": "u_alice", "X-Gateway-Verified": IDENTITY})
+    assert ok.status_code == 200, ok.text
+    # the internal-tier / admin-api key is NOT an identity marker any more
+    assert c.get("/api/sessions", headers={"X-User-Id": "u_alice",
+                                           "X-Gateway-Verified": SECRET}).status_code == 401
+
+
+def test_split_internal_sinks_take_only_the_internal_secret(split_env, tmp_path):
+    c, _ = _client(tmp_path)
+    assert c.post("/events", json=_EVENT, headers={"X-Internal-Secret": IDENTITY}).status_code == 401
+    assert c.post("/events", json=_EVENT, headers={"X-Gateway-Verified": IDENTITY}).status_code == 401
+    assert c.post("/events", json=_EVENT, headers={"X-Internal-Secret": SECRET}).status_code != 401

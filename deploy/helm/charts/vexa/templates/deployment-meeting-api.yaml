@@ -79,6 +79,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "vexa.adminTokenSecretName" . }}
                   key: INTERNAL_API_SECRET
+            # C4 stock-bot compat: the chart's default bot image is the stock vexaai/vexa-bot, which only
+            # authenticates via invocation.internalSecret (meeting-api fills it with the bot's OWN
+            # MeetingToken, never a shared secret). Set false once the bot image is built from this repo.
+            - name: BOT_LEGACY_INTERNAL_SECRET
+              value: {{ toString .Values.meetingApi.botLegacyInternalSecret | quote }}
             # MeetingToken is signed AND verified with the SAME admin secret admin-api holds.
             - name: ADMIN_TOKEN
               valueFrom:
