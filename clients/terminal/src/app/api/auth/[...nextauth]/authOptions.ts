@@ -7,7 +7,7 @@
  *  webapp route, trimmed and reusing our admin client.
  *
  *  Providers self-gate on env presence, so a deploy with no OAuth creds simply exposes no providers
- *  (the email debug login still works). Credentials come from vexa-secrets (see .env.local).
+ *  (only the dev-gated email login remains, and only outside production — see login/devLogin.ts). Credentials come from vexa-secrets (see .env.local).
  */
 import { type AuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
@@ -67,7 +67,8 @@ export const authOptions: AuthOptions = {
       const provider = account?.provider;
       if ((provider !== "google" && provider !== "microsoft") || !user.email) return false;
 
-      const result = await findOrCreateUserToken(user.email.toLowerCase());
+      // Verified OAuth identity → the only path allowed to claim the first-run admin role.
+      const result = await findOrCreateUserToken(user.email.toLowerCase(), { bootstrapAdmin: true });
       if (!result.ok) {
         // eslint-disable-next-line no-console
         console.error(`[terminal-auth] ${provider} sign-in failed for ${user.email}: ${result.error}`);

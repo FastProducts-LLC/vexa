@@ -2,14 +2,14 @@
 /** Login gate. Polls /api/auth/me on mount; if unauthenticated, renders the sign-in card.
  *  Primary path is OAuth — Google / Microsoft buttons (next-auth/react `signIn`, which works without a
  *  SessionProvider). Enabled providers are discovered from NextAuth's /api/auth/providers so a deploy
- *  with no OAuth creds simply hides the buttons. The direct email form is kept as a DEBUG path (server
- *  restricts it to addresses containing "test"), tucked behind a toggle. Styled to match the terminal
+ *  with no OAuth creds simply hides the buttons. The direct email form is a DEV-ONLY path, rendered
+ *  only when /api/auth/instance reports dev_login (VEXA_TERMINAL_DEV_LOGIN=1 outside production; the
+ *  server further requires an exact VEXA_TERMINAL_DEV_LOGIN_EMAILS match). Styled to match the terminal
  *  (CSS vars from globals.css); does not redesign the workbench.
  *
  *  FIRST RUN: /api/auth/instance says whether an admin exists. On a fresh instance the card becomes
- *  the one-time "Set up your instance" claim screen — first sign-in becomes the admin — through
- *  whatever auth the deploy actually has: OAuth buttons when configured, otherwise the test-mode
- *  direct entry with an honest banner naming the OAuth upgrade path. */
+ *  the one-time "Set up your instance" claim screen — the first OAuth sign-in becomes the admin. The
+ *  dev login can never claim admin; with no OAuth configured the card says how to enable it. */
 import { useEffect, useState, type FormEvent } from "react";
 import { signIn } from "next-auth/react";
 
@@ -20,6 +20,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<Status>("checking");
   const [providers, setProviders] = useState<Providers>({ google: false, microsoft: false });
   const [adminExists, setAdminExists] = useState(true); // fail-safe: plain sign-in until told otherwise
+  const [devLogin, setDevLogin] = useState(false); // fail-closed: no email form until the server says so
   const [showDebug, setShowDebug] = useState(false);
   const [email, setEmail] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -39,7 +40,11 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     // First-run probe — {admin_exists:false} flips the card into the admin-claim variant.
     fetch("/api/auth/instance", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : { admin_exists: true }))
-      .then((d: { admin_exists?: boolean }) => active && setAdminExists(d.admin_exists !== false))
+      .then((d: { admin_exists?: boolean; dev_login?: boolean }) => {
+        if (!active) return;
+        setAdminExists(d.admin_exists !== false);
+        setDevLogin(d.dev_login === true);
+      })
       .catch(() => undefined);
     return () => { active = false; };
   }, []);
@@ -109,9 +114,9 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
                   border: "1px solid var(--line2)", borderRadius: 8, padding: "9px 11px",
                 }}
               >
-                ⚠ Test mode — no OAuth configured. Sign-in is limited to emails containing &ldquo;test&rdquo;.
-                For real authentication, acquire Google or Microsoft OAuth credentials and add them to this
-                instance&rsquo;s environment (GOOGLE_CLIENT_ID/SECRET or MICROSOFT_CLIENT_ID/SECRET).
+                ⚠ No OAuth configured. The administrator must sign in with Google or Microsoft: add
+                GOOGLE_CLIENT_ID/SECRET or MICROSOFT_CLIENT_ID/SECRET to this instance&rsquo;s environment,
+                or pre-assign admins with VEXA_ADMIN_EMAILS.
               </div>
             )}
           </>
@@ -130,7 +135,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           </button>
         )}
 
-        {hasOAuth && (
+        {hasOAuth && devLogin && (
           <button
             onClick={() => setShowDebug((v) => !v)}
             style={{ background: "none", border: "none", color: "var(--t3)", fontSize: 11, cursor: "pointer", padding: 0, alignSelf: "flex-start" }}
@@ -139,19 +144,19 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           </button>
         )}
 
-        {(!hasOAuth || showDebug) && (
+        {devLogin && (!hasOAuth || showDebug) && (
           <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ fontSize: 11, color: "var(--t3)", lineHeight: 1.4 }}>
-              {claiming && !hasOAuth
-                ? "Email — must contain “test” (test mode)."
-                : "Debug login — email must contain “test”."}
+              {claiming
+                ? "Dev login — allowlisted emails only; it cannot claim the admin role."
+                : "Dev login — allowlisted emails only (VEXA_TERMINAL_DEV_LOGIN_EMAILS)."}
             </div>
             <input
               type="email"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="you-test@company.com"
+              placeholder="dev@localhost.test"
               style={{
                 background: "var(--panel2)", border: "1px solid var(--line2)", borderRadius: 7,
                 padding: "9px 10px", color: "var(--t1)", fontSize: 13, outline: "none",
@@ -168,7 +173,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
                 cursor: email.trim() && !submitting ? "pointer" : "default",
               }}
             >
-              {submitting ? "Signing in…" : claiming ? "Sign in as admin" : "Sign in"}
+              {submitting ? "Signing in…" : "Sign in"}
             </button>
           </form>
         )}

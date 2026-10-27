@@ -3,15 +3,18 @@
  *  admin-claim variant. Exposes ONLY {admin_exists} — a boolean a visitor could infer anyway
  *  (a claim screen is showing or it isn't); the internal secret stays server-side. Providers
  *  are NOT repeated here — the client already discovers them via /api/auth/providers.
+ *  `dev_login` says whether the dev-only direct email form should render at all (gate open; the
+ *  allowlist itself is never exposed).
  */
 import { NextResponse } from "next/server";
 import { instanceHasAdmin } from "../adminApi";
+import { devLoginEnabled } from "../login/devLogin";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   return NextResponse.json(
-    { admin_exists: await instanceHasAdmin() },
+    { admin_exists: await instanceHasAdmin(), dev_login: devLoginEnabled() },
     { headers: { "Cache-Control": "no-store" } },
   );
 }
