@@ -8,6 +8,7 @@ import {
   googleCameraButtonSelectors
 } from "./selectors";
 import { HumanizedInteractor, MOCAP_LIBRARY } from "./humanized";
+import { assertAllowedMeetingUrl } from "../shared/meeting-url-allowlist";
 
 // Google Meet now blocks browser-synthetic input (Playwright/CDP clicks have
 // isTrusted=false and no real pointer movement). "humanized" mode routes join
@@ -69,6 +70,7 @@ export async function joinGoogleMeeting(
   botName: string,
   botConfig: BotConfig
 ): Promise<void> {
+  assertAllowedMeetingUrl(meetingUrl, "google_meet"); // finding #1 — defence in depth
   await page.goto(meetingUrl, { waitUntil: "domcontentloaded" });
   await page.bringToFront();
 

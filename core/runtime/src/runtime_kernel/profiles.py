@@ -25,6 +25,9 @@ from typing import Optional
 class Runnable:
     image: Optional[str] = None
     command: Optional[list[str]] = None
+    # Which container-hardening class the docker backend applies (runtime_kernel.hardening):
+    # "meeting-bot", "agent", or None (generic defaults).
+    workload_class: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +108,7 @@ def default_registry() -> ProfileRegistry:
                 runnable=Runnable(
                     image=browser_image,
                     command=["/app/vexa-bot/entrypoint.sh"],
+                    workload_class="meeting-bot",
                 ),
                 idle_timeout_sec=0,  # 0 ⇒ managed externally; enforcement skips it
                 base_env={},
@@ -118,6 +122,7 @@ def default_registry() -> ProfileRegistry:
                 runnable=Runnable(
                     image=agent_worker_image,
                     command=["python", "-m", "worker"],
+                    workload_class="agent",
                 ),
                 idle_timeout_sec=300,
                 max_lifetime_sec=3600,
