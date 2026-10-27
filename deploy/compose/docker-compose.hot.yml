@@ -40,4 +40,5 @@ services:
       - ../../clients/terminal/src:/app/src
       - ../../clients/terminal/public:/app/public
       - ../../clients/terminal/next.config.ts:/app/next.config.ts
+      - ../../clients/terminal/csp.mjs:/app/csp.mjs
       - ../../clients/terminal/tsconfig.json:/app/tsconfig.json
