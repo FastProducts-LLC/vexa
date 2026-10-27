@@ -290,9 +290,11 @@ async function pruneLoginTokens(userId: string | number): Promise<void> {
 }
 
 /** Find the user by email, creating them if they don't exist, then mint an APIToken.
+ *  `bootstrapAdmin: true` (verified-identity callers only) lets this sign-in claim the first-run admin role.
  *  Returns the user + token, or an error with an HTTP-ish status for the caller to surface. */
 export async function findOrCreateUserToken(
   email: string,
+  opts: { bootstrapAdmin?: boolean } = {},
 ): Promise<{ ok: true; user: AdminUser; token: string } | { ok: false; status: number; error: string }> {
   const found = await findUserByEmail(email);
 
@@ -321,9 +323,11 @@ export async function findOrCreateUserToken(
   // Bound the user's login tokens to the newest N (best-effort; never blocks sign-in).
   await pruneLoginTokens(user.id);
   // First-run bootstrap: on a fresh instance the FIRST successful sign-in claims the admin role
-  // (no-op everywhere else — admin exists, or an allowlist runs the instance). Covers both the
-  // direct email login and the OAuth signIn callback, which both land here.
-  await bootstrapAdminClaim(user.id);
+  // (no-op everywhere else — admin exists, or an allowlist runs the instance). OPT-IN per caller and
+  // only the verified OAuth signIn callback opts in; the credential-less dev login never does.
+  if (opts.bootstrapAdmin === true) {
+    await bootstrapAdminClaim(user.id);
+  }
   // On genuine account creation ("account start"), eagerly provision the user's workspace tiers so the
   // Personal baseline + `_system` exist before their first chat. Best-effort (idempotent + lazy fallback).
   if (justCreated) {
