@@ -19,6 +19,7 @@ from urllib.parse import quote
 import requests_unixsocket
 
 from .backend import WorkloadHandle
+from .hardening import SAFE_SECURITY_OPT, hardening_host_config, hardening_user
 from .mounts import validate_mount_env, workspace_binds
 from .profiles import Runnable
 
@@ -118,7 +119,7 @@ def _shm_bytes() -> Optional[int]:
 
 _SOCKET_PATHS = ("/var/run/docker.sock", "/run/docker.sock", "/var/run/containerd", "/run/containerd")
 _FORBIDDEN_HOST_CONFIG = ("Privileged", "CapAdd", "PidMode", "IpcMode", "UTSMode", "UsernsMode",
-                          "Devices", "SecurityOpt", "CgroupParent")
+                          "Devices", "CgroupParent")
 
 
 def _assert_safe_host_config(host_config: dict[str, Any]) -> None:
@@ -127,6 +128,11 @@ def _assert_safe_host_config(host_config: dict[str, Any]) -> None:
     for key in _FORBIDDEN_HOST_CONFIG:
         if host_config.get(key):
             raise ValueError(f"refusing to spawn a workload with HostConfig.{key}")
+    # SecurityOpt: only the hardening values the runtime itself sets (finding #4) — never a
+    # seccomp/apparmor/label override.
+    for opt in host_config.get("SecurityOpt") or []:
+        if opt not in SAFE_SECURITY_OPT:
+            raise ValueError(f"refusing to spawn a workload with HostConfig.SecurityOpt {opt!r}")
     if str(host_config.get("NetworkMode", "")).lower() in ("host", "container") or str(
         host_config.get("NetworkMode", "")
     ).lower().startswith("container:"):
@@ -279,6 +285,10 @@ class DockerBackend:
             if value and key not in spawn_env:
                 spawn_env[key] = value
 
+        # Finding #4 — CapDrop ALL, no-new-privileges, memory/pids/CPU ceilings (+ opt-in read-only
+        # rootfs / non-root user) per workload class; see runtime_kernel.hardening.
+        workload_class = runnable.workload_class
+        host_config.update(hardening_host_config(workload_class))
         _assert_safe_host_config(host_config)
         payload: dict[str, Any] = {
             "Image": runnable.image,
@@ -288,6 +298,8 @@ class DockerBackend:
         }
         if runnable.command:
             payload["Cmd"] = list(runnable.command)
+        if user := hardening_user(workload_class):
+            payload["User"] = user
 
         r = self._req("POST", f"/containers/create?name={name}", json=payload)
         if r.status_code == 409:  # stale container with this name — replace it

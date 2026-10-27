@@ -27,6 +27,7 @@ import os
 import uuid
 from typing import Any, Optional
 
+from ..meeting_url_policy import MeetingUrlRejected, check_meeting_url
 from ..obs import log_event
 from .invocation import build_invocation, build_workload_spec, mint_meeting_token
 from .ports import (
@@ -154,8 +155,13 @@ async def request_bot(
     ``<= 0`` means the quota is DEPLETED (every spawn rejected) — 0 is never "unlimited"; ``None``
     means no cap was provided, so no pre-check.
     """
-    # 1. URL.
+    # 1. URL — and the meeting-URL allowlist backstop (finding #1): whichever path reached here
+    #    (POST /bots, auto-join of a stored planned meeting, a future caller), the URL the bot's
+    #    browser will navigate is re-checked BEFORE any DB write. Raises MeetingUrlRejected (→ 422).
     constructed_url = meeting_url or construct_meeting_url(platform, native_meeting_id)
+    if constructed_url is None:
+        raise MeetingUrlRejected(f"no meeting URL for platform '{platform}' — provide meeting_url")
+    constructed_url, _ = check_meeting_url(constructed_url, platform=platform)
 
     # 2c. continue_meeting (P3c): reuse a TERMINAL prior meeting row if asked. The reused row keeps
     #     its id (so its transcripts/recordings survive); a fresh session is appended below. This read

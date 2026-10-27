@@ -113,6 +113,69 @@
    "targets": []
   },
   {
+   "key": "RUNTIME_DOCKER_HARDENING",
+   "class": "defaulted",
+   "default": "on",
+   "description": "docker backend: container hardening for every spawned workload (security finding #4) — CapDrop ALL, no-new-privileges, memory/pids/CPU ceilings, see runtime_kernel/hardening.py. `off` is the emergency switch back to the unhardened create payload",
+   "targets": []
+  },
+  {
+   "key": "RUNTIME_DOCKER_BOT_MEMORY",
+   "class": "defaulted",
+   "default": "4g",
+   "description": "docker backend: memory ceiling (and MemorySwap, i.e. no swap) of every spawned meeting-bot container; k/m/g suffix or bytes, 0 = no ceiling. /dev/shm usage counts against it. Unparseable = spawn fails",
+   "targets": []
+  },
+  {
+   "key": "RUNTIME_DOCKER_BOT_PIDS_LIMIT",
+   "class": "defaulted",
+   "default": "1024",
+   "description": "docker backend: PidsLimit of every spawned meeting-bot container (Chromium + Xvfb + PulseAudio); 0 = no limit",
+   "targets": []
+  },
+  {
+   "key": "RUNTIME_DOCKER_BOT_CPUS",
+   "class": "defaulted",
+   "default": "2",
+   "description": "docker backend: CPU ceiling (NanoCpus) of every spawned meeting-bot container, fractional allowed; 0 = no ceiling",
+   "targets": []
+  },
+  {
+   "key": "RUNTIME_DOCKER_AGENT_MEMORY",
+   "class": "defaulted",
+   "default": "2g",
+   "description": "docker backend: memory ceiling (and MemorySwap) of every spawned agent worker and any other non-bot workload; 0 = no ceiling",
+   "targets": []
+  },
+  {
+   "key": "RUNTIME_DOCKER_AGENT_PIDS_LIMIT",
+   "class": "defaulted",
+   "default": "512",
+   "description": "docker backend: PidsLimit of every spawned agent worker / non-bot workload; 0 = no limit",
+   "targets": []
+  },
+  {
+   "key": "RUNTIME_DOCKER_AGENT_CPUS",
+   "class": "defaulted",
+   "default": "1",
+   "description": "docker backend: CPU ceiling (NanoCpus) of every spawned agent worker / non-bot workload; 0 = no ceiling",
+   "targets": []
+  },
+  {
+   "key": "RUNTIME_DOCKER_BOT_READONLY_ROOTFS",
+   "class": "defaulted",
+   "default": "false",
+   "description": "docker backend: run meeting bots with a read-only rootfs plus tmpfs for /tmp, /root, /var/cache/fontconfig and /app/storage. Off by default: the stock vexaai/vexa-bot image reached the pre-join page with it, but recordings buffer in /tmp (tmpfs = memory) and admission/recording were not proven — enable for a bot image built for it",
+   "targets": []
+  },
+  {
+   "key": "RUNTIME_DOCKER_BOT_USER",
+   "class": "defaulted",
+   "default": "(unset — the image's own user, root in the stock bot image)",
+   "description": "docker backend: run meeting bots as this uid[:gid] (stock image: pwuser = 1001:1001; needs a writable /app/storage). Off by default until the bot image is built to run non-root",
+   "targets": []
+  },
+  {
    "key": "BROWSER_IMAGE",
    "class": "capability",
    "capability": "bot_spawn",
