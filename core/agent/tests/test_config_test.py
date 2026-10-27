@@ -72,13 +72,13 @@ def test_custom_endpoint_unreachable():
 
 
 def test_run_models_test_routes_custom_vs_subscription(tmp_path):
-    out = ct.run_models_test({"mode": "custom", "base_url": "https://gw", "api_key": "k"},
+    out = ct.run_models_test({"mode": "custom", "base_url": "https://gw.example.com", "api_key": "k"},
                              env={}, post=lambda u, p, h: (200, "{}"))
     assert out["mode"] == "custom" and out["ok"]
     out = ct.run_models_test({}, env={}, creds_path=str(tmp_path / "absent"))
     assert out["mode"] == "subscription" and not out["ok"]
     # secrets never echo in provenance
-    out = ct.run_models_test({"mode": "custom", "base_url": "https://gw", "api_key": "SECRET"},
+    out = ct.run_models_test({"mode": "custom", "base_url": "https://gw.example.com", "api_key": "SECRET"},
                              env={}, post=lambda u, p, h: (200, "{}"))
     assert "api_key" not in out["config"] and "SECRET" not in json.dumps(out)
 
