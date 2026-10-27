@@ -6,22 +6,26 @@ name: vexa-v012
 # `condition: service_healthy` so the bring-up is ordered + observable.
 #
 # Bot is NOT a compose service: runtime spawns vexaai/vexa-bot:v012 (BROWSER_IMAGE) on demand via the
-# mounted /var/run/docker.sock. That published ~3.6GB image is a REFERENCE here, never built.
+# Docker API (fpn: through the allowlisting docker-proxy, no socket in the runtime). That published ~3.6GB image is a REFERENCE here, never built.
 
 services:
   # ─── Infrastructure ───────────────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
-    # C4: the store is password-protected. Every consumer (runtime, agent-api, meeting-api, gateway,
-    # spawned bots + agent workers via the URLs the control plane hands them) connects with
-    # redis://:${REDIS_PASSWORD}@redis:6379/0. REQUIRED, no default — an unauthenticated store on a
-    # network that also carries workloads let any container read/alter every stream and session.
-    # Use URL-safe characters only (`openssl rand -hex 32`): the value is embedded in a URL.
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}"]
+    # C4: Redis 7 ACL users, no anonymous access. The `default` user is OFF; the control-plane
+    # services (runtime, agent-api, meeting-api, gateway) connect as `vexa-svc`
+    # (redis://vexa-svc:${REDIS_PASSWORD}@redis:6379/0). Spawned BOTS never get that credential:
+    # meeting-api creates a per-meeting ACL user for each bot (BOT_REDIS_ACL=true) limited to its own
+    # channels — see meeting_api/bot_spawn/redis_acl.py — and deletes it when the meeting ends, which
+    # is why vexa-svc keeps +@all (it needs ACL SETUSER/DELUSER). REQUIRED, no default. Use URL-safe
+    # characters only (`openssl rand -hex 32`): the value is embedded in a URL.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec",
+              "--user", "default", "off",
+              "--user", "vexa-svc", "on", ">${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}", "~*", "&*", "+@all"]
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning --user vexa-svc --pass \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -105,7 +109,10 @@ services:
       - DB_USER=${DB_USER:-postgres}
       - DB_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set in deploy/compose/.env}
       - ADMIN_API_TOKEN=${ADMIN_TOKEN:?ADMIN_TOKEN must be set in deploy/compose/.env}
-      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set in deploy/compose/.env}
+      # admin-api's /internal/* key. The (stock or fork) image reads it as INTERNAL_API_SECRET; its VALUE
+      # is ADMIN_API_INTERNAL_SECRET — distinct from the gateway identity marker and never given to a bot
+      # (C4 split).
+      - INTERNAL_API_SECRET=${ADMIN_API_INTERNAL_SECRET:?ADMIN_API_INTERNAL_SECRET must be set in deploy/compose/.env}
       - LOG_LEVEL=${LOG_LEVEL:-info}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health').status==200 else 1)"]
@@ -146,7 +153,7 @@ services:
       - AGENT_IMAGE=${AGENT_IMAGE:-vexaai/v012-agent-api:${IMAGE_TAG:-dev}}
       - AGENT_WORKER_IMAGE=${AGENT_WORKER_IMAGE:-vexaai/v012-agent-worker:${IMAGE_TAG:-dev}}
       - VEXA_AGENT_SRC_MOUNT=${VEXA_AGENT_SRC_MOUNT:-}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}@redis:6379/0
+      - REDIS_URL=redis://vexa-svc:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}@redis:6379/0
       # The Runtime brokers model credentials into spawned agents. Subscription credentials may be
       # mounted from the host; API-style Anthropic/OpenRouter env is forwarded from this trusted service.
       - HOST_CLAUDE_CREDENTIALS=${HOST_CLAUDE_CREDENTIALS:-}
@@ -157,9 +164,10 @@ services:
       - ANTHROPIC_DEFAULT_OPUS_MODEL=${ANTHROPIC_DEFAULT_OPUS_MODEL:-}
       - ANTHROPIC_DEFAULT_SONNET_MODEL=${ANTHROPIC_DEFAULT_SONNET_MODEL:-}
       - ANTHROPIC_DEFAULT_HAIKU_MODEL=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}
-      # C4: also stamped as X-Internal-Secret on every RuntimeEvent callback the kernel posts to
-      # meeting-api /runtime/callback (which refuses callbacks without it outside DEV_MODE).
-      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set}
+      # C4: stamped as X-Internal-Secret on every RuntimeEvent callback the kernel posts to
+      # meeting-api /runtime/callback (which refuses callbacks without it outside DEV_MODE). Its own
+      # value — only runtime + meeting-api hold it.
+      - RUNTIME_CALLBACK_SECRET=${RUNTIME_CALLBACK_SECRET:?RUNTIME_CALLBACK_SECRET must be set in deploy/compose/.env}
       # Control-plane bearer (security finding C5): every route but /health requires
       # `Authorization: Bearer $RUNTIME_API_TOKEN`; unset → the runtime fails closed (503). The SAME
       # value goes to meeting-api (RUNTIME_API_TOKEN) and agent-api (VEXA_RUNTIME_API_TOKEN). REQUIRED
@@ -243,10 +251,12 @@ services:
       # Lane M: the users.data.memberships[] index mirror over the admin-api internal edge
       # (policy/members.json in the workspace git repo stays authoritative; this is the listing cache).
       - VEXA_ADMIN_API_URL=http://admin-api:8001
-      - VEXA_INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set in deploy/compose/.env}
+      # admin-api's internal key (also agent-api's own internal tier: /invocations, /events, admin overview).
+      - VEXA_INTERNAL_API_SECRET=${ADMIN_API_INTERNAL_SECRET:?ADMIN_API_INTERNAL_SECRET must be set in deploy/compose/.env}
       # Identity (P20): agent-api derives the subject from the gateway-injected X-User-Id, honored ONLY with
-      # the gateway's X-Gateway-Verified marker (== INTERNAL_API_SECRET); anything else is 401, and the
-      # internal sinks (/invocations, /events) need X-Internal-Secret. The single-user fallback subject is
+      # the gateway's X-Gateway-Verified marker (== GATEWAY_IDENTITY_SECRET, C4 split); anything else is
+      # 401, and the internal sinks (/invocations, /events) need X-Internal-Secret.
+      - VEXA_GATEWAY_IDENTITY_SECRET=${GATEWAY_IDENTITY_SECRET:?GATEWAY_IDENTITY_SECRET must be set in deploy/compose/.env} The single-user fallback subject is
       # ignored unless VEXA_REQUIRE_GATEWAY_IDENTITY=0 (a dev-only opt-out — never on a shared network).
       - VEXA_AGENT_DEFAULT_SUBJECT=${VEXA_AGENT_DEFAULT_SUBJECT:-}
       - VEXA_REQUIRE_GATEWAY_IDENTITY=${VEXA_REQUIRE_GATEWAY_IDENTITY:-1}
@@ -263,7 +273,7 @@ services:
       - ANTHROPIC_DEFAULT_HAIKU_MODEL=${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}
       - VEXA_LOG_LEVEL=${LOG_LEVEL:-info}
       # Stream primitive — the per-dispatch redis Streams the control plane relays (unit:<id>:out → SSE).
-      - VEXA_REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}@redis:6379/0
+      - VEXA_REDIS_URL=redis://vexa-svc:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}@redis:6379/0
       # The backing the Runtime binds into the worker as the workspace store (the project-prefixed volume).
       - VEXA_WORKSPACE_MOUNT_SOURCE=${COMPOSE_PROJECT_NAME:-vexa-v012}_agent-workspaces
       # Three-tier mount stack (AMENDMENT 4): the platform-owned GLOBAL SYSTEM workspace (_global) mounted
@@ -313,19 +323,28 @@ services:
       - DB_NAME=${DB_NAME:-vexa}
       - DB_USER=${DB_USER:-postgres}
       - DB_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set in deploy/compose/.env}
-      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}@redis:6379/0
+      - REDIS_URL=redis://vexa-svc:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}@redis:6379/0
       - RUNTIME_API_URL=http://runtime:8090
       # C5: bearer for the runtime control plane — must equal the runtime's RUNTIME_API_TOKEN.
       - RUNTIME_API_TOKEN=${RUNTIME_API_TOKEN:?RUNTIME_API_TOKEN must be set}
-      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set in deploy/compose/.env}
+      # C4 split — each edge its own secret, none of them ever handed to a bot:
+      #   GATEWAY_IDENTITY_SECRET    the X-Gateway-Verified marker on x-user-* requests (from the gateway)
+      #   ADMIN_API_INTERNAL_SECRET  meeting-api → admin-api /internal/* (bot-context, calendar configs)
+      #   RUNTIME_CALLBACK_SECRET    runtime → meeting-api /runtime/callback
+      #   MEETING_TOKEN_SECRET       HS256 key of the per-bot MeetingToken (bot callback + upload auth)
+      - GATEWAY_IDENTITY_SECRET=${GATEWAY_IDENTITY_SECRET:?GATEWAY_IDENTITY_SECRET must be set in deploy/compose/.env}
+      - ADMIN_API_INTERNAL_SECRET=${ADMIN_API_INTERNAL_SECRET:?ADMIN_API_INTERNAL_SECRET must be set in deploy/compose/.env}
+      - RUNTIME_CALLBACK_SECRET=${RUNTIME_CALLBACK_SECRET:?RUNTIME_CALLBACK_SECRET must be set in deploy/compose/.env}
+      - MEETING_TOKEN_SECRET=${MEETING_TOKEN_SECRET:?MEETING_TOKEN_SECRET must be set in deploy/compose/.env}
+      # Per-meeting Redis ACL user for every bot (never meeting-api's own vexa-svc credential).
+      - BOT_REDIS_ACL=${BOT_REDIS_ACL:-true}
+      # TEMPORARY stock-bot compat: true puts the bot's OWN MeetingToken into invocation.internalSecret
+      # (the only credential field the stock vexaai/vexa-bot reads). Remove once we ship our own bot image.
+      - BOT_LEGACY_INTERNAL_SECRET=${BOT_LEGACY_INTERNAL_SECRET:-false}
       # The background sweeps' internal lookups: auto-join fetches per-user spawn context
       # (/internal/users/{id}/bot-context) and calendar sync discovers connected ICS feeds
       # (/internal/calendar-configs). Unset -> calendar sync no-ops, auto-join spawns uncapped.
       - ADMIN_API_URL=http://admin-api:8001
-      # MeetingToken is signed (mint) AND verified (recordings upload) with ADMIN_TOKEN — the SAME
-      # admin secret admin-api holds (admin-api gets ADMIN_API_TOKEN=${ADMIN_TOKEN}). Exactly like
-      # main (meeting-api ADMIN_TOKEN = admin-api ADMIN_API_TOKEN). __main__ passes token_secret=ADMIN_TOKEN.
-      - ADMIN_TOKEN=${ADMIN_TOKEN:?ADMIN_TOKEN must be set in deploy/compose/.env}
       # STT the spawned bot transcribes with — bot_spawn threads these into the invocation (registry
       # `stt` resource; the funded internal@vexa.ai token). Unset → bot joins+captures but no transcript.
       - TRANSCRIPTION_SERVICE_URL=${TRANSCRIPTION_SERVICE_URL:-}
@@ -375,8 +394,11 @@ services:
     environment:
       - ADMIN_API_URL=http://admin-api:8001
       - MEETING_API_URL=http://meeting-api:8080
-      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}@redis:6379/0
-      - INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set in deploy/compose/.env}
+      - REDIS_URL=redis://vexa-svc:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}@redis:6379/0
+      # C4 split: the identity marker it stamps on meeting-api / agent-api forwards, and admin-api's
+      # internal key it presents on /internal/validate — two different values.
+      - GATEWAY_IDENTITY_SECRET=${GATEWAY_IDENTITY_SECRET:?GATEWAY_IDENTITY_SECRET must be set in deploy/compose/.env}
+      - ADMIN_API_INTERNAL_SECRET=${ADMIN_API_INTERNAL_SECRET:?ADMIN_API_INTERNAL_SECRET must be set in deploy/compose/.env}
       - LOG_LEVEL=${LOG_LEVEL:-info}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
@@ -460,7 +482,7 @@ services:
       # for everyone. Identity is VERIFIED against admin-api /internal/validate over the internal-tier
       # secret (never trusted from a cookie), and the same secret fronts agent-api's admin overview.
       - VEXA_ADMIN_EMAILS=${VEXA_ADMIN_EMAILS:-}
-      - VEXA_INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set in deploy/compose/.env}
+      - VEXA_INTERNAL_API_SECRET=${ADMIN_API_INTERNAL_SECRET:?ADMIN_API_INTERNAL_SECRET must be set in deploy/compose/.env}
       # Composer mic dictation (/api/stt) — same STT service the meeting pipeline uses; token stays
       # server-side. Empty → the mic button reports "not configured" instead of failing silently.
       - TRANSCRIPTION_SERVICE_URL=${TRANSCRIPTION_SERVICE_URL:-}

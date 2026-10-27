@@ -77,7 +77,7 @@ up:
 ## A value already set in .env is never touched.
 _seed_env:
 	@[ -f .env ] || { echo "→ no .env found; seeding from .env.example"; cp .env.example .env; }
-	@for k in ADMIN_TOKEN INTERNAL_API_SECRET RUNTIME_API_TOKEN DB_PASSWORD MINIO_SECRET_KEY REDIS_PASSWORD NEXTAUTH_SECRET VEXA_DISPATCH_SIGNING_KEY; do \
+	@for k in ADMIN_TOKEN GATEWAY_IDENTITY_SECRET ADMIN_API_INTERNAL_SECRET RUNTIME_CALLBACK_SECRET MEETING_TOKEN_SECRET RUNTIME_API_TOKEN DB_PASSWORD MINIO_SECRET_KEY REDIS_PASSWORD NEXTAUTH_SECRET VEXA_DISPATCH_SIGNING_KEY; do \
 	   v=$$(grep -E "^$$k=" .env | head -1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$$//; s/[[:space:]]+$$//'); \
 	   if [ -z "$$v" ]; then \
 	     r=$$(openssl rand -hex 32 2>/dev/null || od -An -N32 -tx1 /dev/urandom | tr -d ' \n'); \

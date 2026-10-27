@@ -24,3 +24,15 @@ The two shims mount **no named volumes or bind mounts**, so there is nothing on 
 re-own when rolling from the old root images to these. If a volume is ever added (for example a
 cache under `$XDG_CACHE_HOME=/home/app/.cache`), an existing root-owned volume needs a one-time
 `chown -R 10001:10001` on the host before the non-root container can write to it.
+
+## C4 secrets and the stock bot (operator)
+
+The fpn overlay requires these in `deploy/compose/.env` (all new random values, hex):
+`GATEWAY_IDENTITY_SECRET`, `ADMIN_API_INTERNAL_SECRET`, `RUNTIME_CALLBACK_SECRET`,
+`MEETING_TOKEN_SECRET`, `REDIS_PASSWORD`, `NEXTAUTH_SECRET`, `VEXA_DISPATCH_SIGNING_KEY`, plus the
+explicit flag `BOT_LEGACY_INTERNAL_SECRET=true` while `BROWSER_IMAGE` is the stock
+`vexaai/vexa-bot`. With that flag set, a bot's only credential is its own session-bound MeetingToken.
+`INTERNAL_API_SECRET` is no longer passed to any fpn service; retire it after the roll. The roll
+needs a bot-free window and meeting-api, runtime and gateway on the same `FPN_VEXA_SHA`. Procedure,
+verification and what each secret opens:
+[`deploy/compose/README.md` → Secrets and networks](../compose/README.md#secrets-and-networks-c4-hardening).

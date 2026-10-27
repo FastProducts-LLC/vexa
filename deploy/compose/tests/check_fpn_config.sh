@@ -9,7 +9,7 @@ grep -hEo '\$\{[A-Za-z_][A-Za-z0-9_]*:?\?' \
     deploy/compose/docker-compose.yml deploy/compose/docker-compose.fpn.yml \
     | sed -E 's/^\$\{//; s/:?\?$//' | sort -u \
     | while IFS= read -r name; do
-        printf '%s=stub\n' "$name"
+        printf '%s=stub-%s\n' "$name" "$name"
     done > "$tmp_dir/env"
 
 docker compose -p vexa-check --project-directory deploy/compose --env-file "$tmp_dir/env" \
@@ -79,5 +79,41 @@ config_text = config_path.read_text() if in_repo and config_path.is_file() else 
 check(6, "repo HAProxy config exists, denies requests and has no template placeholders",
       in_repo and config_path.is_file()
       and "http-request deny" in config_text and "${" not in config_text)
+
+# ── C4: split secrets, bot credentials, Redis ACL ─────────────────────────────────────────────────
+active = {name: svc for name, svc in services.items() if not svc.get("profiles")}
+
+
+def env_of(name):
+    return active.get(name, {}).get("environment") or {}
+
+
+def holders(var):
+    stub = f"stub-{var}"
+    return {name for name, svc in active.items()
+            if stub in json.dumps(svc.get("environment") or {}) + json.dumps(svc.get("command") or "")}
+
+
+expected = {
+    "GATEWAY_IDENTITY_SECRET": {"gateway", "meeting-api"},
+    "ADMIN_API_INTERNAL_SECRET": {"admin-api", "gateway", "meeting-api"},
+    "RUNTIME_CALLBACK_SECRET": {"runtime", "meeting-api"},
+    "MEETING_TOKEN_SECRET": {"meeting-api"},
+}
+check(7, "each split secret reaches only its own surface",
+      all(holders(var) == want for var, want in expected.items()))
+meeting = env_of("meeting-api")
+check(8, "meeting-api: explicit stock-bot compat decision, per-meeting Redis ACL, no shared/admin secret",
+      meeting.get("BOT_LEGACY_INTERNAL_SECRET") == "stub-BOT_LEGACY_INTERNAL_SECRET"
+      and meeting.get("BOT_REDIS_ACL") == "true"
+      and "INTERNAL_API_SECRET" not in meeting and "ADMIN_TOKEN" not in meeting
+      and env_of("admin-api").get("INTERNAL_API_SECRET") == "stub-ADMIN_API_INTERNAL_SECRET")
+redis_cmd = active.get("redis", {}).get("command") or []
+urls = [v for svc in active.values() for k, v in (svc.get("environment") or {}).items()
+        if k.endswith("REDIS_URL") and v]
+check(9, "redis: default user off, services connect as vexa-svc",
+      " ".join(redis_cmd).find("--user default off") >= 0
+      and "--requirepass" not in redis_cmd
+      and urls and all(u.startswith("redis://vexa-svc:stub-REDIS_PASSWORD@redis:") for u in urls))
 print("CHECK-FPN-CONFIG OK")
 PY

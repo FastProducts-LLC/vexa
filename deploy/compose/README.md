@@ -33,7 +33,7 @@ docker compose -f deploy/compose/docker-compose.yml down -v
 ```
 
 `.env.example` documents every variable (faithful to the 0.11 `deploy/compose` names: `DB_*`,
-`REDIS_URL`, `ADMIN_TOKEN`, `INTERNAL_API_SECRET`, `MINIO_*`, `BROWSER_IMAGE`/`AGENT_IMAGE`,
+`REDIS_URL`, `ADMIN_TOKEN`, the C4 split secrets, `MINIO_*`, `BROWSER_IMAGE`/`AGENT_IMAGE`,
 `DOCKER_GID`, `*_HOST_PORT`).
 
 ## Secrets and networks (C4 hardening)
@@ -43,50 +43,102 @@ is set in `deploy/compose/.env` (`make up` generates missing ones with `openssl 
 `make _seed_env` alone does just that). The fpn overlay (`docker-compose.fpn.yml`) requires the
 same values.
 
-| variable | used by |
-|---|---|
-| `ADMIN_TOKEN` | admin-api auth, MeetingToken signing (meeting-api), terminal admin key |
-| `INTERNAL_API_SECRET` | the internal service edge: gateway ⇄ admin-api / meeting-api / agent-api, the runtime's workload callbacks, the bot's lifecycle callback |
-| `RUNTIME_API_TOKEN` | the runtime control-plane bearer (C5) |
-| `DB_PASSWORD` | postgres, admin-api, meeting-api |
-| `MINIO_SECRET_KEY` | minio root password, meeting-api S3 secret |
-| `REDIS_PASSWORD` | redis `--requirepass`; every `REDIS_URL` / `VEXA_REDIS_URL` is `redis://:${REDIS_PASSWORD}@redis:6379/0` (URL-safe characters only — use hex) |
-| `NEXTAUTH_SECRET` | terminal session/JWT secret |
-| `VEXA_DISPATCH_SIGNING_KEY` | agent-api's per-dispatch worker tokens |
+| variable | proves / used for | held by |
+|---|---|---|
+| `ADMIN_TOKEN` | admin-api's admin key (`X-Admin-API-Key`) | admin-api, terminal |
+| `GATEWAY_IDENTITY_SECRET` | `X-Gateway-Verified`: "the gateway verified this `x-user-*` identity". Whoever holds it can act as any user | gateway, meeting-api, agent-api |
+| `ADMIN_API_INTERNAL_SECRET` | admin-api `/internal/*` (`X-Internal-Secret`); admin-api reads it under the name `INTERNAL_API_SECRET` | admin-api, gateway, meeting-api, agent-api, terminal |
+| `RUNTIME_CALLBACK_SECRET` | runtime → meeting-api `/runtime/callback` | runtime, meeting-api |
+| `MEETING_TOKEN_SECRET` | HS256 key of the per-bot MeetingToken | meeting-api only |
+| `RUNTIME_API_TOKEN` | the runtime control-plane bearer (C5) | runtime, meeting-api, agent-api |
+| `DB_PASSWORD` | postgres | postgres, admin-api, meeting-api |
+| `MINIO_SECRET_KEY` | minio root password / meeting-api S3 secret | minio, meeting-api |
+| `REDIS_PASSWORD` | password of the `vexa-svc` Redis ACL user (`redis://vexa-svc:${REDIS_PASSWORD}@redis:6379/0`; hex only — it is embedded in a URL) | redis, runtime, meeting-api, gateway, agent-api |
+| `NEXTAUTH_SECRET` | terminal session/JWT secret | terminal |
+| `VEXA_DISPATCH_SIGNING_KEY` | agent-api's per-dispatch worker tokens | agent-api |
+
+Flags: `BOT_REDIS_ACL` (default `true`) and `BOT_LEGACY_INTERNAL_SECRET` (default `false`; **required**
+in the fpn overlay — see below).
 
 meeting-api additionally refuses to boot (outside `DEV_MODE=true`) when a secret still holds one of
 the old published placeholders (`changeme`, `vexa-internal-secret`, `postgres`, `vexa-secret-key`,
-`vexa-runtime-dev-token`, …).
+`vexa-runtime-dev-token`, …), and when it has no MeetingToken key at all.
 
-**Internal callbacks are authenticated.** `POST /runtime/callback` needs
-`X-Internal-Secret == INTERNAL_API_SECRET` (the runtime stamps it on every RuntimeEvent);
-`POST /bots/internal/callback/lifecycle` needs the bot's `X-Internal-Secret` *or* its MeetingToken
-as `Authorization: Bearer`. Both fail closed (503) when unconfigured outside `DEV_MODE`.
+### What a bot holds (and nothing more)
 
-**Two networks.** `vexa` is the control plane (every long-running service; the runtime with the
-Docker socket, postgres, minio, admin-api, agent-api and the gateway live *only* here). `bots` is the
-workloads network: the runtime spawns every meeting bot and agent worker onto it (`DOCKER_NETWORK=
+Spawned bots run a browser on a page chosen by the API caller, so they are treated as hostile. Before
+the 2026-10 follow-up every bot received `INTERNAL_API_SECRET`, which was also the gateway identity
+marker and admin-api's internal key: one compromised bot could read every tenant's transcripts and
+recordings. Now a bot holds exactly:
+
+* **its MeetingToken** (`invocation.token`): HS256 with `MEETING_TOKEN_SECRET`, claims `meeting_id` and
+  `connection_id`. `POST /bots/internal/callback/lifecycle` and `POST /internal/recordings/upload`
+  accept only this token, and only for the token's own session (`connection_id` must match the
+  event / upload). Token A cannot complete, fail or upload into session B. No deployment secret is
+  accepted on either route.
+* **a per-meeting Redis user** (`BOT_REDIS_ACL=true`): `bot-<connection_id>`, created by meeting-api at
+  spawn with `ACL SETUSER` and deleted when the meeting ends. It may `XADD transcription_segments`
+  (write-only), `PUBLISH tc:meeting:<id>:mutable`, `SUBSCRIBE bot_commands:meeting:<id>`, `PING`.
+  Everything else is `NOPERM`: other meetings' channels, `u:*`, reads of the shared feed,
+  `KEYS`/`SCAN`/`CONFIG`/`ACL`/`FLUSH*`. The `default` Redis user is off. Residual: the collector
+  routes `transcription_segments` entries by the `meeting_id` in the payload, so a bot can still append
+  a forged segment for another meeting to that one shared stream. Closing that needs per-meeting
+  streams or signed payloads in the collector.
+* its STT/TTS shim tokens (unchanged).
+
+**Stock-bot compat (`BOT_LEGACY_INTERNAL_SECRET`, temporary).** The stock upstream image
+(`vexaai/vexa-bot:v0.12.0-rc.10`, `:v012` = v0.12.28) never reads `invocation.token`. It sends
+`x-internal-secret: <invocation.internalSecret>` on lifecycle callbacks and
+`Authorization: Bearer <invocation.internalSecret>` on recording uploads. With the flag `true`,
+meeting-api fills `internalSecret` with **the bot's own MeetingToken** (not a shared secret) and
+accepts it from `x-internal-secret`, with the same signature and session binding. A stock bot's
+credential therefore opens only its own lifecycle and upload. It is refused as an
+`X-Gateway-Verified` marker, on admin-api `/internal/*`, and on `/runtime/callback`. Set it `true`
+while `BROWSER_IMAGE` is a stock image and `false` for a bot built from this repo (which sends the
+bearer). **Remove the flag once the fork ships its own bot image.**
+
+**Fallbacks.** If a split secret is unset, the code falls back to the old `INTERNAL_API_SECRET`
+(and `MEETING_TOKEN_SECRET` to `ADMIN_TOKEN`), logging a deprecation warning, so helm / lite / an old
+`.env` keep booting. Compose sets every split secret explicitly and passes `INTERNAL_API_SECRET` to no
+service. Even in fallback mode bots never receive any of these values.
+
+**Two networks.** `vexa` is the control plane: every long-running service. The runtime, postgres,
+minio, admin-api, agent-api and the gateway live *only* here. `bots` is the workloads network: the
+runtime spawns every meeting bot and agent worker onto it (`DOCKER_NETWORK=
 ${COMPOSE_PROJECT_NAME}_bots`), and it carries only `redis`, `meeting-api` and, on fpn, the
 `stt-hosted` / `tts-cartesia` shims. A compromised bot can therefore reach neither the runtime API nor
 the databases nor the identity plane. Both networks keep internet egress (bots join meetings, workers
 call model APIs).
 
+On fpn the runtime no longer mounts the Docker socket: it reaches Docker through the allowlisting
+`docker-proxy` (see *fpn Docker proxy* below), on its own internal network that bots are not on.
+
 ### Rolling an existing stack onto this layout
 
 `DOCKER_NETWORK` is also the discriminator the runtime uses to **re-adopt live workloads** after a
 restart: bots started on `${project}_vexa` will not be re-adopted once it points at `${project}_bots`.
-Do the roll in a bot-free window:
+Bots already running also hold the old `INTERNAL_API_SECRET` and the old Redis URL, which the new
+meeting-api / Redis refuse. Do the roll in a **bot-free window**:
 
-1. Add the new variables to `.env` (`make _seed_env`), and pick a hex `REDIS_PASSWORD`.
+1. Add the new variables to `.env` (`make _seed_env` generates the empty ones). All of them are new
+   random values: `GATEWAY_IDENTITY_SECRET`, `ADMIN_API_INTERNAL_SECRET`, `RUNTIME_CALLBACK_SECRET`,
+   `MEETING_TOKEN_SECRET`, `REDIS_PASSWORD` (hex), `NEXTAUTH_SECRET`, `VEXA_DISPATCH_SIGNING_KEY`. Do
+   **not** reuse the current `INTERNAL_API_SECRET` for any of them: every bot ever spawned has held
+   that value. Set `BOT_LEGACY_INTERNAL_SECRET=true` while `BROWSER_IMAGE` is a stock image.
 2. Stop every running bot (`GET /bots/status` must be empty) and let agent workers finish.
-3. `docker compose -f docker-compose.yml -f docker-compose.fpn.yml up -d` — compose creates `bots`,
-   recreates `redis` with `--requirepass` (the data volume is kept), and re-attaches `redis`,
-   `meeting-api`, `stt-hosted` and `tts-cartesia` to both networks.
-4. Verify: `docker network inspect <project>_bots` lists only those four services; send a bot and
-   confirm it appears on `_bots` and reaches `joining`.
-
-On fpn the runtime no longer mounts the Docker socket: it reaches Docker through the allowlisting
-`docker-proxy` (see *fpn Docker proxy* below), on its own internal network that bots are not on.
+3. Roll meeting-api, runtime and gateway images from the same `FPN_VEXA_SHA` together: an old gateway
+   would stamp a marker the new meeting-api refuses, and an old runtime would stamp the wrong callback
+   secret. Then `docker compose -f docker-compose.yml -f docker-compose.fpn.yml up -d`. Compose creates
+   `bots`, recreates `redis` with ACL users (the data volume is kept), and re-attaches `redis`,
+   `meeting-api`, `stt-hosted` and `tts-cartesia` to both networks. admin-api (still the stock image on
+   fpn) gets `ADMIN_API_INTERNAL_SECRET` under its `INTERNAL_API_SECRET` name, so it needs no new image.
+4. Verify:
+   * `docker network inspect <project>_bots` lists only those four services.
+   * `redis-cli --user vexa-svc --pass … ACL LIST` shows `default off`.
+   * Send a bot and confirm it reaches `joining`. While it runs, `ACL LIST` shows a `bot-<connection_id>`
+     user, and it disappears after the bot ends.
+   * meeting-api logs no `lifecycle_callback_refused` / `runtime_callback_refused`.
+5. Remove `INTERNAL_API_SECRET` from `.env` once nothing external still uses it.
 
 ## fpn Docker proxy
 

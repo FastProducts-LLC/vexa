@@ -42,13 +42,26 @@
 #
 # REQUIRED secrets (no defaults here — `compose up` refuses to start if any is unset/empty, and
 # meeting-api additionally refuses to boot if one still holds the stock placeholder value):
-#   ADMIN_TOKEN                  admin-api admin key + MeetingToken HS256 key (not "changeme")
-#   INTERNAL_API_SECRET          gateway<->admin-api/meeting-api internal edge (not "vexa-internal-secret")
+#   ADMIN_TOKEN                  admin-api admin key (not "changeme"); no longer the MeetingToken key
+#   GATEWAY_IDENTITY_SECRET      the X-Gateway-Verified marker: gateway -> meeting-api (C4 split)
+#   ADMIN_API_INTERNAL_SECRET    admin-api /internal/* key: gateway + meeting-api -> admin-api (C4 split)
+#   RUNTIME_CALLBACK_SECRET      runtime -> meeting-api /runtime/callback (C4 split)
+#   MEETING_TOKEN_SECRET         HS256 key of the per-bot MeetingToken (C4 split)
+#   REDIS_PASSWORD               password of the `vexa-svc` Redis ACL user (bots get per-meeting users)
+#   NEXTAUTH_SECRET / VEXA_DISPATCH_SIGNING_KEY   interpolated by the base file even though terminal /
+#                                agent-api are disabled here
+#   (INTERNAL_API_SECRET is no longer read by any fpn service — retire it after the roll.)
 #   DB_PASSWORD                  Postgres password (not "postgres"; an EXISTING volume keeps its old
 #                                password — ALTER ROLE it first, POSTGRES_PASSWORD only applies at initdb)
 #   MINIO_SECRET_KEY             MinIO root password (not "vexa-secret-key")
 #   RUNTIME_API_TOKEN            runtime control-plane bearer, shared by runtime + meeting-api
 #                                (security finding C5; `openssl rand -hex 32`; not "vexa-runtime-dev-token")
+#
+# REQUIRED decision (no default here):
+#   BOT_LEGACY_INTERNAL_SECRET   true while BROWSER_IMAGE is the STOCK vexaai/vexa-bot (it authenticates
+#                                only via invocation.internalSecret; meeting-api then puts the bot's OWN
+#                                MeetingToken there — never a shared secret). false once the fork builds
+#                                its own bot image. TEMPORARY — the flag goes away with the stock image.
 #
 # The external networks must exist first: docker network create fpn_backend
 #                                          docker network create fpn_vexa_api
@@ -58,7 +71,6 @@
 # preflight rejects any placeholder that is still set explicitly.
 x-fpn-req:
   - &req-db-password DB_PASSWORD=${DB_PASSWORD:?DB_PASSWORD must be set in deploy/compose/.env}
-  - &req-internal-secret INTERNAL_API_SECRET=${INTERNAL_API_SECRET:?INTERNAL_API_SECRET must be set in deploy/compose/.env}
   - &req-runtime-token RUNTIME_API_TOKEN=${RUNTIME_API_TOKEN:?RUNTIME_API_TOKEN must be set in deploy/compose/.env}
 
 x-fpn-logging: &fpn-logging
@@ -97,7 +109,6 @@ services:
   admin-api:
     environment:
       - *req-db-password
-      - *req-internal-secret
       - ADMIN_API_TOKEN=${ADMIN_TOKEN:?ADMIN_TOKEN must be set in deploy/compose/.env}
     mem_limit: 256m
     pids_limit: 128
@@ -118,7 +129,6 @@ services:
       - ${HOST_CLAUDE_CREDENTIALS:-/dev/null}:/var/lib/vexa/host-claude-credentials:ro
     group_add: !reset []
     environment:
-      - *req-internal-secret
       - *req-runtime-token
       - DOCKER_HOST=tcp://docker-proxy:2375
       # No agent-api in fpn → no workload may declare ANY bind source (bots never mount anything).
@@ -159,13 +169,14 @@ services:
     pull_policy: missing
     environment:
       - *req-db-password
-      - *req-internal-secret
-      - ADMIN_TOKEN=${ADMIN_TOKEN:?ADMIN_TOKEN must be set in deploy/compose/.env}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:?MINIO_SECRET_KEY must be set in deploy/compose/.env}
       # C5: runtime control-plane bearer (== the runtime's RUNTIME_API_TOKEN).
       - *req-runtime-token
       # Production: the boot preflight rejects stock placeholder secrets (never true in fpn).
       - DEV_MODE=false
+      # C4: the prod bot is the STOCK upstream image → an explicit compat decision is required.
+      - BOT_LEGACY_INTERNAL_SECRET=${BOT_LEGACY_INTERNAL_SECRET:?BOT_LEGACY_INTERNAL_SECRET must be set (true while BROWSER_IMAGE is the stock vexaai/vexa-bot)}
+      - BOT_REDIS_ACL=true
       # Threaded by bot_spawn into voice-agent workload env as TTS_SERVICE_URL / TTS_API_TOKEN.
       - TTS_SERVICE_URL=${TTS_SERVICE_URL:-http://tts-cartesia:8080}
       - TTS_SERVICE_TOKEN=${TTS_SERVICE_TOKEN:-}
@@ -177,8 +188,9 @@ services:
     pids_limit: 256
     logging: *fpn-logging
     # NOT on fpn_backend (trust boundary): meeting-api trusts the gateway-injected X-User-Id /
-    # X-User-Workspaces headers and serves the unauthenticated bot/runtime callbacks
-    # (/bots/internal/callback/lifecycle, /runtime/callback). On the shared fpn_backend network any
+    # X-User-Workspaces headers (with the GATEWAY_IDENTITY_SECRET marker) and serves the bot/runtime
+    # callbacks (/bots/internal/callback/lifecycle — bound MeetingToken; /runtime/callback —
+    # RUNTIME_CALLBACK_SECRET). On the shared fpn_backend network any
     # co-hosted app could forge X-User-Id and read/stop/speak into ANY tenant's meetings. External
     # consumers (taims) go through vexa-gateway with an X-API-Key; meeting-api stays on the base
     # compose's internal `vexa` network only.
@@ -186,8 +198,6 @@ services:
   gateway:
     image: ghcr.io/fastproducts-llc/vexa-gateway:${FPN_VEXA_SHA:-latest}
     pull_policy: missing
-    environment:
-      - *req-internal-secret
     mem_limit: 256m
     pids_limit: 128
     logging: *fpn-logging
