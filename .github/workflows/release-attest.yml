@@ -16,11 +16,11 @@ jobs:
   attest:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build the canonical source archive
         run: git archive --format=tar.gz --prefix="vexa-core-${GITHUB_REF_NAME}/" -o "vexa-core-${GITHUB_REF_NAME}.tar.gz" "$GITHUB_REF_NAME"
       - name: Attest SLSA build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: vexa-core-${{ github.ref_name }}.tar.gz
       - name: Attach the attested archive to the release
