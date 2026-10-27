@@ -92,11 +92,21 @@
    "class": "defaulted",
    "default": "(unset)",
    "secret": true,
-   "description": "DEPRECATED single internal secret: the fallback for ADMIN_API_INTERNAL_SECRET and RUNTIME_CALLBACK_SECRET when those are unset (helm / lite still set only this). Never given to bots. compose sets the split secrets instead (C4)",
+   "description": "DEPRECATED single internal secret: the fallback for GATEWAY_IDENTITY_SECRET, ADMIN_API_INTERNAL_SECRET and RUNTIME_CALLBACK_SECRET when those are unset (helm / lite still set only this). Never given to bots. compose sets the split secrets instead (C4)",
    "targets": [
     "helm",
     "lite"
    ]
+  },
+  {
+   "key": "GATEWAY_IDENTITY_SECRET",
+   "class": "defaulted",
+   "default": "(falls back to INTERNAL_API_SECRET)",
+   "secret": true,
+   "targets": [
+    "compose"
+   ],
+   "description": "the X-Gateway-Verified marker: any request carrying x-user-* identity headers must present it (constant-time); unset with no fallback ⇒ 503 outside DEV_MODE (C4 — distinct from admin-api's internal key, never given to bots)"
   },
   {
    "key": "ADMIN_API_INTERNAL_SECRET",

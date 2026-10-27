@@ -58,7 +58,7 @@ is set in `deploy/compose/.env` (`make up` / `make dev` generate missing ones wi
 | variable | proves / used for | held by |
 |---|---|---|
 | `ADMIN_TOKEN` | admin-api's admin key (`X-Admin-API-Key`) | admin-api, terminal/dashboard |
-| `GATEWAY_IDENTITY_SECRET` | `X-Gateway-Verified`: "the gateway verified this `x-user-*` identity". Whoever holds it can act as any user | gateway, agent-api |
+| `GATEWAY_IDENTITY_SECRET` | `X-Gateway-Verified`: "the gateway verified this `x-user-*` identity". Whoever holds it can act as any user | gateway, meeting-api, agent-api |
 | `ADMIN_API_INTERNAL_SECRET` | admin-api `/internal/*` (`X-Internal-Secret`); admin-api reads it under the name `INTERNAL_API_SECRET` | admin-api, gateway, meeting-api, agent-api, terminal |
 | `RUNTIME_CALLBACK_SECRET` | runtime → meeting-api `/runtime/callback` | runtime, meeting-api |
 | `MEETING_TOKEN_SECRET` | HS256 key of the per-bot MeetingToken | meeting-api only |
@@ -106,10 +106,11 @@ stock bot images are in use.**
 booting. Compose sets every split secret explicitly. Bots never receive any of these values in any
 mode.
 
-**Not on main yet:** meeting-api on `main` does not verify the gateway identity marker on `x-user-*`
-requests (the `fpn` branch does, `meeting_api/internal_auth.py`). Until that lands, anything that can
-reach meeting-api on the `vexa` network can assert an identity. Bots are on `bots`, which does reach
-meeting-api, so this is a separate open item.
+**Gateway identity edge (ported from fpn).** meeting-api now refuses any request carrying `x-user-*`
+headers unless it also carries `X-Gateway-Verified == GATEWAY_IDENTITY_SECRET` (`internal_auth.py`; 503
+outside `DEV_MODE` when unset). The gateway stamps it on meeting-api and agent-api forwards and on the
+`/ws` authorize-subscribe hop; agent-api stamps it on its own meeting-api lookups. Before this, anything
+on `vexa` or `bots`, every spawned bot included, could send `x-user-id: <victim>` with no credential.
 
 **Two networks.** `vexa` is the control plane (every long-running service; the runtime with the
 Docker socket, postgres, minio, admin-api and agent-api live *only* here). `bots` is the workloads
@@ -129,7 +130,8 @@ in a bot-free window:
    `INTERNAL_API_SECRET`, which every bot has held. Set `BOT_LEGACY_INTERNAL_SECRET=true` if
    `BROWSER_IMAGE` is a stock image.
 2. Stop every running bot (`GET /bots/status` must be empty) and let agent workers finish.
-3. Roll meeting-api, runtime, gateway and agent-api together, then `docker compose up -d`. Compose
+3. Roll meeting-api, runtime, gateway and agent-api together (an old gateway sends no marker to
+   meeting-api, which the new meeting-api refuses), then `docker compose up -d`. Compose
    creates `bots`, recreates `redis` with ACL users (the data volume is kept), and re-attaches `redis`
    and `meeting-api` to both networks.
 4. Verify:

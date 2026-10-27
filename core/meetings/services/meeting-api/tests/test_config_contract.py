@@ -53,7 +53,7 @@ def test_declaration_loads_and_is_internally_consistent():
     required = {k["key"] for k in decl["keys"] if k["class"] == "required-explicit"}
     assert required == set()
     keys = {k["key"] for k in decl["keys"]}
-    assert {"MEETING_TOKEN_SECRET", "ADMIN_API_INTERNAL_SECRET",
+    assert {"MEETING_TOKEN_SECRET", "GATEWAY_IDENTITY_SECRET", "ADMIN_API_INTERNAL_SECRET",
             "RUNTIME_CALLBACK_SECRET", "BOT_LEGACY_INTERNAL_SECRET", "BOT_REDIS_ACL"} <= keys
 
 

@@ -6,8 +6,8 @@
   * the MeetingToken is signed with MEETING_TOKEN_SECRET and bound to the spawn's connection_id;
   * ``BOT_REDIS_ACL=true`` gives the bot a per-meeting Redis user (never meeting-api's own URL), and
     the user is deleted when the meeting goes terminal / the spawn fails;
-  * (main: meeting-api has no gateway identity edge yet — fpn's internal_auth.py — so the identity
-    split is pinned on the gateway / agent-api side here.)
+  * the gateway identity edge accepts ONLY GATEWAY_IDENTITY_SECRET once it is set — not the legacy
+    INTERNAL_API_SECRET, not admin-api's internal key, not the runtime callback secret, not a token.
 """
 from __future__ import annotations
 
@@ -192,6 +192,37 @@ def test_acl_user_revoked_on_terminal_lifecycle(acl, goldens):
 async def test_acl_disabled_keeps_the_given_url(split):
     inv, _ = await _spawn()
     assert inv["redisUrl"] == SERVICE_REDIS
+
+
+# ── each secret opens only its own surface (meeting-api side) ──────────────────────────────────
+
+def _client():
+    return TestClient(create_app(meeting_repo=InMemoryMeetingRepo(), runtime=FakeRuntimeClient()))
+
+
+def test_gateway_identity_edge_accepts_only_the_gateway_identity_secret(split, monkeypatch):
+    monkeypatch.setenv("DEV_MODE", "false")
+    c = _client()
+    ok = c.get("/meetings", headers={"x-user-id": "7", "x-gateway-verified": SECRETS["GATEWAY_IDENTITY_SECRET"]})
+    assert ok.status_code == 200, ok.text
+    token = None
+    for name in ("INTERNAL_API_SECRET", "ADMIN_API_INTERNAL_SECRET", "RUNTIME_CALLBACK_SECRET",
+                 "MEETING_TOKEN_SECRET", "ADMIN_TOKEN"):
+        r = c.get("/meetings", headers={"x-user-id": "7", "x-gateway-verified": SECRETS[name]})
+        assert r.status_code == 401, name
+    from meeting_api.bot_spawn.invocation import mint_meeting_token
+
+    token = mint_meeting_token(1, 7, "google_meet", "x", secret=MTS, connection_id="c")
+    r = c.get("/meetings", headers={"x-user-id": "7", "x-gateway-verified": token})
+    assert r.status_code == 401
+
+
+def test_gateway_identity_falls_back_to_internal_api_secret_when_unset(monkeypatch):
+    monkeypatch.setenv("DEV_MODE", "false")
+    monkeypatch.setenv("ADMIN_TOKEN", "x")
+    monkeypatch.setenv("INTERNAL_API_SECRET", "legacy-only")
+    r = _client().get("/meetings", headers={"x-user-id": "7", "x-gateway-verified": "legacy-only"})
+    assert r.status_code == 200, r.text
 
 
 def test_boot_refuses_without_any_meeting_token_key(monkeypatch):

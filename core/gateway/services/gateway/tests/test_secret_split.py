@@ -1,7 +1,7 @@
 """C4 follow-up (deep audit #2): the gateway holds two DIFFERENT secrets and never mixes them up.
 
   * ``ADMIN_API_INTERNAL_SECRET`` → ``X-Internal-Secret`` on admin-api ``/internal/validate`` only;
-  * ``GATEWAY_IDENTITY_SECRET``   → ``x-gateway-verified`` on agent-api forwards only (main).
+  * ``GATEWAY_IDENTITY_SECRET``   → ``x-gateway-verified`` on meeting-api / agent-api forwards only.
 
 The legacy single ``INTERNAL_API_SECRET`` is only a fallback for an un-migrated deployment.
 """
@@ -53,14 +53,13 @@ async def test_admin_validate_carries_only_the_admin_internal_secret(split):
     assert "x-gateway-verified" not in hop["headers"]
 
 
-async def test_meeting_api_hop_carries_no_internal_secret(split):
-    """main: the /ws authorize-subscribe hop to meeting-api carries neither secret."""
+async def test_meeting_api_hop_carries_only_the_identity_secret(split):
     c = _Client()
     await AdminApiAuthorizer(c, "http://admin-api", "http://meeting-api").authorize_subscribe("k", [])
     hop = c.calls[-1]
     assert hop["url"] == "http://meeting-api/ws/authorize-subscribe"
-    for secret in (ADMIN, IDENTITY, LEGACY):
-        assert secret not in hop["headers"].values()
+    assert hop["headers"]["x-gateway-verified"] == IDENTITY
+    assert ADMIN not in hop["headers"].values() and LEGACY not in hop["headers"].values()
 
 
 async def test_legacy_single_secret_still_works_when_split_unset(monkeypatch):
@@ -70,6 +69,8 @@ async def test_legacy_single_secret_still_works_when_split_unset(monkeypatch):
     c = _Client()
     await AdminApiAuthorizer(c, "http://admin-api", "http://meeting-api").resolve("k")
     assert c.calls[0]["headers"]["X-Internal-Secret"] == LEGACY
+    await AdminApiAuthorizer(c, "http://admin-api", "http://meeting-api").authorize_subscribe("k", [])
+    assert c.calls[-1]["headers"]["x-gateway-verified"] == LEGACY
 
 
 def test_forwards_stamp_the_identity_secret_not_the_admin_key(split):

@@ -456,16 +456,17 @@ def create_app(
         headers[TRACE_HEADER] = get_trace_id() or ""
         return headers, None
 
-    # agent-api honors X-User-Id only alongside X-Gateway-Verified == the internal-tier secret, so a
-    # direct (non-gateway) caller on the compose network cannot pose as a user. Stamped ONLY on agent
-    # forwards (meeting-api / admin-api / mcp never see the secret through this path).
+    # agent-api AND meeting-api honor X-User-Id only alongside X-Gateway-Verified == the gateway identity
+    # secret, so a direct (non-gateway) caller on the compose network — a spawned bot included — cannot
+    # pose as a user. Stamped on agent-api and meeting-api forwards only (admin-api / mcp never see it).
     # C4 split: the marker is GATEWAY_IDENTITY_SECRET — NOT admin-api's internal key and never a value
     # a bot holds. Legacy fallback: INTERNAL_API_SECRET.
     _gateway_secret = internal_api_secret if internal_api_secret is not None else (
         os.getenv("GATEWAY_IDENTITY_SECRET") or os.getenv("INTERNAL_API_SECRET", ""))
 
     def _stamp_agent(url: str, headers: dict) -> dict:
-        if _gateway_secret and url.startswith(f"{agent_api_url}/"):
+        # C4: meeting-api enforces the SAME marker on every x-user-* request (internal_auth.py).
+        if _gateway_secret and (url.startswith(f"{agent_api_url}/") or url.startswith(f"{meeting_api_url}/")):
             headers["x-gateway-verified"] = _gateway_secret
         return headers
 
@@ -839,6 +840,7 @@ def create_app(
         headers, error = await _authorize(method, request, api_key=api_key)
         if error is not None:
             return error
+        _stamp_agent(url, headers)
         content = await request.body()
         params = dict(request.query_params) or None
 

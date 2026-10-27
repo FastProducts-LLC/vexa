@@ -323,9 +323,11 @@ services:
       - REDIS_URL=redis://vexa-svc:${REDIS_PASSWORD:?REDIS_PASSWORD must be set in deploy/compose/.env}@redis:6379/0
       - RUNTIME_API_URL=http://runtime:8090
       # C4 split — each edge its own secret, none of them ever handed to a bot:
+      #   GATEWAY_IDENTITY_SECRET    the X-Gateway-Verified marker on x-user-* requests (from the gateway)
       #   ADMIN_API_INTERNAL_SECRET  meeting-api → admin-api /internal/* (bot-context, calendar configs)
       #   RUNTIME_CALLBACK_SECRET    runtime → meeting-api /runtime/callback
       #   MEETING_TOKEN_SECRET       HS256 key of the per-bot MeetingToken (bot callback + upload auth)
+      - GATEWAY_IDENTITY_SECRET=${GATEWAY_IDENTITY_SECRET:?GATEWAY_IDENTITY_SECRET must be set in deploy/compose/.env}
       - ADMIN_API_INTERNAL_SECRET=${ADMIN_API_INTERNAL_SECRET:?ADMIN_API_INTERNAL_SECRET must be set in deploy/compose/.env}
       - RUNTIME_CALLBACK_SECRET=${RUNTIME_CALLBACK_SECRET:?RUNTIME_CALLBACK_SECRET must be set in deploy/compose/.env}
       - MEETING_TOKEN_SECRET=${MEETING_TOKEN_SECRET:?MEETING_TOKEN_SECRET must be set in deploy/compose/.env}

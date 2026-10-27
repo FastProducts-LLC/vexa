@@ -149,3 +149,43 @@ def test_find_row_by_id_then_native_prefers_active():
     assert sd.find_row(rows, meeting_id="11")["id"] == 11
     assert sd.find_row(rows, native_id="abc-defg-hij")["id"] == 11  # non-terminal wins
     assert sd.find_row(rows, meeting_id=None, native_id="zzz") is None
+
+
+# ── C4 (ported from fpn): meeting-api requires the gateway marker on x-user-* hops ──────────────
+
+def test_fetch_user_meetings_stamps_gateway_marker(monkeypatch):
+    """meeting-api honors X-User-Id only with X-Gateway-Verified == the internal secret."""
+    import io
+    import json as _json
+
+    seen = []
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen.append({k.lower(): v for k, v in req.header_items()})
+        return _Resp(_json.dumps({"meetings": []}).encode())
+
+    monkeypatch.setattr(sd.urllib.request, "urlopen", fake_urlopen)
+    sd.fetch_user_meetings("http://meeting-api:8080", "7", ["w1"], internal_secret="isec")
+    assert seen and all(h["x-gateway-verified"] == "isec" and h["x-user-id"] == "7" for h in seen)
+    seen.clear()
+    sd.fetch_user_meetings("http://meeting-api:8080", "7")
+    assert seen and all("x-gateway-verified" not in h for h in seen)
+
+
+def test_digest_source_threads_internal_secret(monkeypatch):
+    seen = {}
+
+    def fake_fetch(url, uid, ws, **kw):
+        seen.update(kw)
+        return []
+
+    monkeypatch.setattr(sd, "fetch_user_meetings", fake_fetch)
+    sd.digest_source("http://x", None, internal_secret="isec")("7")
+    assert seen["internal_secret"] == "isec"

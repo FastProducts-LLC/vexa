@@ -23,7 +23,7 @@
    "class": "defaulted",
    "default": "(falls back to INTERNAL_API_SECRET)",
    "secret": true,
-   "description": "the X-Gateway-Verified marker stamped on agent-api forwards (C4 split: whoever holds it can act as any user — never admin-api's key, never given to a bot)",
+   "description": "the X-Gateway-Verified marker stamped on meeting-api / agent-api forwards and the /ws authorize-subscribe hop (C4 split: whoever holds it can act as any user — never admin-api's key, never given to a bot)",
    "targets": ["compose"]
   },
   {

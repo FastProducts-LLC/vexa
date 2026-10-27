@@ -124,6 +124,11 @@ class AdminApiAuthorizer:
             # subscribe path fail-safe — surface it as an authorization error, not an unhandled 500.
             return {"authorized": [], "errors": [f"authorization_unavailable:{e}"]}
         if user_data:
+            # meeting-api honors x-user-* only alongside the gateway marker (== GATEWAY_IDENTITY_SECRET,
+            # C4; legacy fallback INTERNAL_API_SECRET).
+            identity_secret = os.getenv("GATEWAY_IDENTITY_SECRET") or os.getenv("INTERNAL_API_SECRET", "")
+            if identity_secret:
+                auth_headers["x-gateway-verified"] = identity_secret
             auth_headers["x-user-id"] = str(user_data["user_id"])
             auth_headers["x-user-scopes"] = ",".join(user_data.get("scopes", []))
             auth_headers["x-user-limits"] = str(user_data.get("max_concurrent", 3))
