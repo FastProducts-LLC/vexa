@@ -87,7 +87,12 @@ class BotRedisAcl:
         if self._client is None:
             import redis.asyncio as aioredis
 
-            self._client = aioredis.from_url(self.base_url, decode_responses=True)
+            # Bounded, like every other meeting-api Redis client (#528): a Redis outage surfaces as a
+            # timeout → the spawn fails closed instead of hanging.
+            self._client = aioredis.from_url(
+                self.base_url, decode_responses=True,
+                socket_timeout=10, socket_connect_timeout=5, health_check_interval=30,
+            )
         return self._client
 
     async def provision(self, *, meeting_id: int | str, connection_id: str) -> str:
